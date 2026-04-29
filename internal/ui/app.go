@@ -16,6 +16,10 @@ func New() *App {
 }
 
 func (a *App) Run() {
+	a.configureTray()
 	a.window = a.buildMainWindow()
+	a.window.SetCloseIntercept(func() {
+		a.window.Hide()
+	})
 	a.window.ShowAndRun()
 }

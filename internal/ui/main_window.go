@@ -19,7 +19,9 @@ func (a *App) buildMainWindow() fyne.Window {
 		widget.NewButton("添加服务", func() {}),
 		widget.NewButton("刷新发现", func() {}),
 		widget.NewButton("开放到 tailnet", func() {}),
-		widget.NewButton("开启公网", func() {}),
+		widget.NewButton("开启公网", func() {
+			ShowPublicConfirm(w, func(PublicChoice) {})
+		}),
 	)
 	w.SetContent(container.NewBorder(nil, nil, nil, actions, services))
 	return w
