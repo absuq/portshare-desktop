@@ -21,3 +21,7 @@
 
 - `docs/NEXT_SESSION.md`
 - `docs/superpowers/plans/2026-04-29-portshare-mvp.md`
+
+手动验收步骤见：
+
+- `docs/manual-verification.md`
