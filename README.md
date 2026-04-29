@@ -16,3 +16,8 @@
 设计规格见：
 
 - `docs/superpowers/specs/2026-04-29-portshare-design.md`
+
+继续开发前请先阅读：
+
+- `docs/NEXT_SESSION.md`
+- `docs/superpowers/plans/2026-04-29-portshare-mvp.md`
