@@ -1,7 +1,7 @@
 package main
 
-import "fmt"
+import "github.com/absuq/portshare-desktop/internal/ui"
 
 func main() {
-	fmt.Println("PortShare desktop app bootstrap")
+	ui.New().Run()
 }
