@@ -13,13 +13,15 @@
 - 确认系统托盘：窗口关闭后常驻托盘，托盘提供关键操作。
 - 确认历史记录：保存开放、关闭、失败和到期关闭事件，默认保留 1 年。
 - 确认需求文档：设计规格写入 `docs/superpowers/specs/2026-04-29-portshare-design.md`。
+- 确认实现计划：MVP 实现计划写入 `docs/superpowers/plans/2026-04-29-portshare-mvp.md`。
 
 ## 计划完成
 
+- 按 `docs/superpowers/plans/2026-04-29-portshare-mvp.md` 分任务执行 MVP。
 - 搭建 Go 项目结构和 Fyne 桌面应用入口。
 - 实现中文默认界面和英文语言切换。
 - 实现服务列表、手动添加、自动发现和刷新。
-- 实现 provider 抽象接口。
+- 实现 provider 抽象接口和 fake provider。
 - 实现 TailscaleProvider。
 - 实现 tailnet 发布、关闭和状态刷新。
 - 实现公网发布强确认、计时关闭和长期开放二次确认。
