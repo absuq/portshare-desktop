@@ -1,29 +1,36 @@
 package ui
 
 import (
-	"context"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
-
-	"github.com/absuq/portshare-desktop/internal/domain"
 )
 
 type Dependencies struct {
-	Manager interface {
-		Status(context.Context) ([]domain.Share, error)
-	}
+	Manager       Manager
+	Discovery     Discovery
+	DirectManager DirectManager
+	Timeout       time.Duration
 }
 
 type App struct {
-	fyneApp fyne.App
-	window  fyne.Window
-	deps    Dependencies
+	fyneApp    fyne.App
+	window     fyne.Window
+	deps       Dependencies
+	ctrl       *Controller
+	directCtrl *DirectController
+	refreshUI  func()
 }
 
 func New(deps Dependencies) *App {
 	a := app.NewWithID("com.absuq.portshare")
-	return &App{fyneApp: a, deps: deps}
+	return &App{
+		fyneApp:    a,
+		deps:       deps,
+		ctrl:       NewController(deps),
+		directCtrl: NewDirectController(deps.DirectManager),
+	}
 }
 
 func (a *App) Run() {

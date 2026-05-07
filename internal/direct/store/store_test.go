@@ -105,7 +105,7 @@ func TestStoreDoesNotContainPlainSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(data), "super-secret-value") {
-		t.Fatalf("stored peer file contains plain secret: %s", data)
+		t.Fatal("stored peer file contains plain secret")
 	}
 }
 

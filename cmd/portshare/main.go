@@ -2,12 +2,14 @@ package main
 
 import (
 	"log"
+	"os"
 	"path/filepath"
 
 	"github.com/absuq/portshare-desktop/internal/audit"
 	"github.com/absuq/portshare-desktop/internal/config"
-	"github.com/absuq/portshare-desktop/internal/manager"
-	"github.com/absuq/portshare-desktop/internal/provider/tailscale"
+	directmanager "github.com/absuq/portshare-desktop/internal/direct/manager"
+	directstore "github.com/absuq/portshare-desktop/internal/direct/store"
+	tailscalediag "github.com/absuq/portshare-desktop/internal/tailscale"
 	"github.com/absuq/portshare-desktop/internal/ui"
 )
 
@@ -24,6 +26,22 @@ func main() {
 	logPath := filepath.Join(filepath.Dir(cfgPath), "audit.jsonl")
 	auditLog := audit.NewLog(logPath)
 	_ = auditLog.Cleanup(cfg.AuditRetention)
-	mgr := manager.New(tailscale.New(nil), auditLog)
-	ui.New(ui.Dependencies{Manager: mgr}).Run()
+	deviceName, err := os.Hostname()
+	if err != nil || deviceName == "" {
+		deviceName = "portshare-device"
+	}
+	peersPath := cfg.DirectPeersPath
+	if peersPath == "" {
+		peersPath = filepath.Join(filepath.Dir(cfgPath), "direct-peers.json")
+	}
+	directMgr := directmanager.New(directmanager.Config{
+		Tailscale:         tailscalediag.NewClient(nil),
+		PeerStore:         directstore.New(peersPath),
+		DirectControlPort: cfg.DirectControlPort,
+		DeviceID:          deviceName,
+		DeviceName:        deviceName,
+	})
+	ui.New(ui.Dependencies{
+		DirectManager: directMgr,
+	}).Run()
 }

@@ -76,6 +76,73 @@ func TestRealDirectClientAndStoreSatisfyManagerDependencies(t *testing.T) {
 	var _ PeerStore = store.New(filepath.Join(t.TempDir(), "peers.json"))
 }
 
+func TestStartControlServerRejectsEmptySecret(t *testing.T) {
+	m := New(Config{DeviceID: "device-a", DeviceName: "desktop-a"})
+	err := m.StartControlServer(context.Background(), "127.0.0.1:0", "")
+	if err == nil {
+		t.Fatal("expected empty secret to be rejected")
+	}
+}
+
+func TestStartControlServerPairsWithClientAndStopClosesListener(t *testing.T) {
+	m := New(Config{DeviceID: "device-b", DeviceName: "desktop-b"})
+	if err := m.StartControlServer(context.Background(), "127.0.0.1:0", "shared"); err != nil {
+		t.Fatal(err)
+	}
+	address := m.ControlAddress()
+	if address == "" {
+		t.Fatal("expected control address")
+	}
+
+	client := direct.NewClient(direct.ClientConfig{DeviceID: "device-a", DeviceName: "desktop-a", Secret: "shared"})
+	peer, err := client.Pair(context.Background(), address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if peer.DeviceID != "device-b" || peer.DeviceName != "desktop-b" {
+		t.Fatalf("unexpected peer: %+v", peer)
+	}
+
+	if err := m.StopControlServer(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Pair(context.Background(), address); err == nil {
+		t.Fatal("expected pair to fail after control server stops")
+	}
+}
+
+func TestStartControlServerRestartsExistingListener(t *testing.T) {
+	m := New(Config{DeviceID: "device-b", DeviceName: "desktop-b"})
+	if err := m.StartControlServer(context.Background(), "127.0.0.1:0", "one"); err != nil {
+		t.Fatal(err)
+	}
+	first := m.ControlAddress()
+	if err := m.StartControlServer(context.Background(), "127.0.0.1:0", "two"); err != nil {
+		t.Fatal(err)
+	}
+	second := m.ControlAddress()
+	if second == "" || second == first {
+		t.Fatalf("expected replacement listener, first=%q second=%q", first, second)
+	}
+	_ = m.StopControlServer(context.Background())
+}
+
+func TestStartControlServerCanRestartSameAddress(t *testing.T) {
+	m := New(Config{DeviceID: "device-b", DeviceName: "desktop-b"})
+	if err := m.StartControlServer(context.Background(), "127.0.0.1:0", "one"); err != nil {
+		t.Fatal(err)
+	}
+	address := m.ControlAddress()
+	if err := m.StartControlServer(context.Background(), address, "two"); err != nil {
+		t.Fatal(err)
+	}
+	client := direct.NewClient(direct.ClientConfig{DeviceID: "device-a", DeviceName: "desktop-a", Secret: "two"})
+	if _, err := client.Pair(context.Background(), address); err != nil {
+		t.Fatal(err)
+	}
+	_ = m.StopControlServer(context.Background())
+}
+
 func TestReadyUsesTailscaleReport(t *testing.T) {
 	m := New(Config{Tailscale: fakeTailscale{report: tailscale.ReadyReport{
 		Ready:  true,

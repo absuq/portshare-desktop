@@ -152,6 +152,10 @@ func (c *DirectController) CreateForward(ctx context.Context, peerID, targetHost
 		c.state.Message = "请输入远端目标端口"
 		return ErrDirectTargetPortRequired
 	}
+	if targetPort > 65535 {
+		c.state.Message = "远端目标端口必须在 1-65535 之间"
+		return ErrDirectTargetPortRequired
+	}
 	localAddress = strings.TrimSpace(localAddress)
 	if localAddress == "" {
 		localAddress = "127.0.0.1:0"

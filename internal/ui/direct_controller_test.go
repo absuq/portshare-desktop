@@ -281,6 +281,23 @@ func TestDirectControllerStateIsImmutableSnapshot(t *testing.T) {
 	}
 }
 
+func TestAppNewInitializesDirectController(t *testing.T) {
+	mgr := &fakeDirectManager{}
+	app := New(Dependencies{DirectManager: mgr})
+
+	if app.directCtrl == nil {
+		t.Fatal("expected direct controller to be initialized")
+	}
+	if app.ctrl == nil {
+		t.Fatal("expected legacy controller to remain available")
+	}
+}
+
+func TestDependenciesRequireDirectManagerForApp(t *testing.T) {
+	var _ DirectManager = &fakeDirectManager{}
+	var _ DirectManager = directmanager.New(directmanager.Config{})
+}
+
 func TestDirectControllerRejectsMissingInputs(t *testing.T) {
 	ctrl := NewDirectController(&fakeDirectManager{})
 
@@ -295,6 +312,31 @@ func TestDirectControllerRejectsMissingInputs(t *testing.T) {
 	}
 	if err := ctrl.CreateForward(context.Background(), "device-b", "127.0.0.1", 0, "127.0.0.1:0"); !errors.Is(err, ErrDirectTargetPortRequired) {
 		t.Fatalf("expected ErrDirectTargetPortRequired, got %v", err)
+	}
+	if err := ctrl.CreateForward(context.Background(), "device-b", "127.0.0.1", 70000, "127.0.0.1:0"); !errors.Is(err, ErrDirectTargetPortRequired) {
+		t.Fatalf("expected ErrDirectTargetPortRequired for oversized port, got %v", err)
+	}
+}
+
+func TestLocalListenAddressAcceptsOnlyLocalPort(t *testing.T) {
+	got, err := localListenAddress("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "127.0.0.1:0" {
+		t.Fatalf("unexpected automatic local address: %s", got)
+	}
+	got, err = localListenAddress("18080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "127.0.0.1:18080" {
+		t.Fatalf("unexpected local address: %s", got)
+	}
+	for _, input := range []string{"localhost:18080", ":18080", "abc", "70000", "0"} {
+		if _, err := localListenAddress(input); err == nil {
+			t.Fatalf("expected localListenAddress(%q) to fail", input)
+		}
 	}
 }
 

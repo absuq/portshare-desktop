@@ -31,6 +31,8 @@ type Config struct {
 	ForwardFactory    ForwardFactory
 	DirectControlPort int
 	SecretLabel       string
+	DeviceID          string
+	DeviceName        string
 }
 
 type Manager struct {
@@ -41,11 +43,17 @@ type Manager struct {
 	forwardFactory    ForwardFactory
 	directControlPort int
 	secretLabel       string
+	deviceID          string
+	deviceName        string
 
-	peerMu         sync.Mutex
-	forwardMu      sync.Mutex
-	nextForwardSeq int
-	forwards       map[string]runningForward
+	authMu          sync.RWMutex
+	controlMu       sync.Mutex
+	controlServer   *direct.Server
+	controlListener net.Listener
+	peerMu          sync.Mutex
+	forwardMu       sync.Mutex
+	nextForwardSeq  int
+	forwards        map[string]runningForward
 }
 
 type PairedPeer = direct.PairedPeer
@@ -121,6 +129,8 @@ func New(config Config) *Manager {
 		forwardFactory:    forwardFactory,
 		directControlPort: directControlPort,
 		secretLabel:       config.SecretLabel,
+		deviceID:          config.DeviceID,
+		deviceName:        config.DeviceName,
 		forwards:          make(map[string]runningForward),
 	}
 }
@@ -142,15 +152,125 @@ func (m *Manager) Ready(ctx context.Context) ReadyState {
 	}
 }
 
+func (m *Manager) StartControlServer(ctx context.Context, listenAddress string, secret string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(secret) == "" {
+		return errors.New("shared secret is required")
+	}
+	if strings.TrimSpace(listenAddress) == "" {
+		return errors.New("listen address is required")
+	}
+
+	var sameAddressServer *direct.Server
+	var sameAddressListener net.Listener
+	m.controlMu.Lock()
+	if m.controlListener != nil && m.controlListener.Addr().String() == listenAddress {
+		sameAddressServer = m.controlServer
+		sameAddressListener = m.controlListener
+		m.controlServer = nil
+		m.controlListener = nil
+	}
+	m.controlMu.Unlock()
+	if sameAddressServer != nil {
+		_ = sameAddressServer.Close()
+	}
+	if sameAddressListener != nil {
+		_ = closeListener(sameAddressListener)
+	}
+
+	listener, err := net.Listen("tcp", listenAddress)
+	if err != nil {
+		return err
+	}
+	server := direct.NewServer(direct.ServerConfig{
+		DeviceID:   m.deviceID,
+		DeviceName: m.deviceName,
+		Secret:     secret,
+	})
+	client := direct.NewClient(direct.ClientConfig{
+		DeviceID:   m.deviceID,
+		DeviceName: m.deviceName,
+		Secret:     secret,
+	})
+
+	m.controlMu.Lock()
+	oldServer := m.controlServer
+	oldListener := m.controlListener
+	m.controlServer = server
+	m.controlListener = listener
+	m.controlMu.Unlock()
+
+	if oldServer != nil {
+		_ = oldServer.Close()
+	}
+	if oldListener != nil {
+		_ = closeListener(oldListener)
+	}
+
+	m.authMu.Lock()
+	m.pairClient = client
+	m.directClient = client
+	m.secretLabel = store.DeriveSecretLabel(secret)
+	m.authMu.Unlock()
+
+	go func() { _ = server.Serve(listener) }()
+	return nil
+}
+
+func (m *Manager) StopControlServer(ctx context.Context) error {
+	_ = ctx
+	m.controlMu.Lock()
+	server := m.controlServer
+	listener := m.controlListener
+	m.controlServer = nil
+	m.controlListener = nil
+	m.controlMu.Unlock()
+
+	if server != nil {
+		_ = server.Close()
+	}
+	if listener != nil {
+		return closeListener(listener)
+	}
+	return nil
+}
+
+func closeListener(listener net.Listener) error {
+	err := listener.Close()
+	if errors.Is(err, net.ErrClosed) {
+		return nil
+	}
+	return err
+}
+
+func (m *Manager) ControlAddress() string {
+	m.controlMu.Lock()
+	defer m.controlMu.Unlock()
+	if m.controlListener == nil {
+		return ""
+	}
+	return m.controlListener.Addr().String()
+}
+
 func (m *Manager) PairPeer(ctx context.Context, address string) (PairedPeer, error) {
-	if m.pairClient == nil {
+	m.authMu.RLock()
+	pairClient := m.pairClient
+	secretLabel := m.secretLabel
+	m.authMu.RUnlock()
+
+	if pairClient == nil {
 		return PairedPeer{}, errors.New("pair client is not configured")
 	}
 	if m.peerStore == nil {
 		return PairedPeer{}, errors.New("peer store is not configured")
 	}
 
-	peer, err := m.pairClient.Pair(ctx, address)
+	peer, err := pairClient.Pair(ctx, address)
 	if err != nil {
 		return PairedPeer{}, err
 	}
@@ -163,7 +283,7 @@ func (m *Manager) PairPeer(ctx context.Context, address string) (PairedPeer, err
 		return PairedPeer{}, err
 	}
 
-	peers = upsertTrustedPeer(peers, m.trustedPeerFromPair(peer, address))
+	peers = upsertTrustedPeer(peers, trustedPeerFromPair(peer, address, secretLabel))
 
 	if err := m.peerStore.SavePeers(peers); err != nil {
 		return PairedPeer{}, err
@@ -191,7 +311,10 @@ func (m *Manager) CreateForward(ctx context.Context, req ForwardRequest) (Runnin
 	if m.peerStore == nil {
 		return RunningForward{}, errors.New("peer store is not configured")
 	}
-	if m.directClient == nil {
+	m.authMu.RLock()
+	directClient := m.directClient
+	m.authMu.RUnlock()
+	if directClient == nil {
 		return RunningForward{}, errors.New("direct client is not configured")
 	}
 	if req.PeerID == "" {
@@ -227,7 +350,7 @@ func (m *Manager) CreateForward(ctx context.Context, req ForwardRequest) (Runnin
 		PeerAddress:  peerAddress,
 		TargetHost:   req.TargetHost,
 		TargetPort:   req.TargetPort,
-		DirectClient: m.directClient,
+		DirectClient: directClient,
 	})
 	if handle == nil {
 		return RunningForward{}, errors.New("forward factory returned nil")
@@ -283,7 +406,7 @@ func findTrustedPeer(peers []store.TrustedPeer, id string) (store.TrustedPeer, b
 	return store.TrustedPeer{}, false
 }
 
-func (m *Manager) trustedPeerFromPair(peer direct.PairedPeer, address string) store.TrustedPeer {
+func trustedPeerFromPair(peer direct.PairedPeer, address string, secretLabel string) store.TrustedPeer {
 	now := time.Now()
 	if peer.Address == "" {
 		peer.Address = address
@@ -294,7 +417,7 @@ func (m *Manager) trustedPeerFromPair(peer direct.PairedPeer, address string) st
 		TailscaleIP:   hostFromAddress(peer.Address),
 		FirstPairedAt: now,
 		LastSeenAt:    now,
-		SecretLabel:   m.secretLabel,
+		SecretLabel:   secretLabel,
 	}
 }
 
