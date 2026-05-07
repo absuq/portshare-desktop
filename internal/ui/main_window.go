@@ -7,7 +7,7 @@ import (
 )
 
 func (a *App) buildMainWindow() fyne.Window {
-	w := a.fyneApp.NewWindow("端口发布器")
+	w := a.fyneApp.NewWindow("portshare")
 	w.Resize(fyne.NewSize(980, 640))
 	services := widget.NewList(
 		func() int { return 0 },

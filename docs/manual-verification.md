@@ -3,12 +3,12 @@
 ## 准备
 
 1. 在电脑 B 启动本地网页服务：`npm run dev -- --host 127.0.0.1 --port 3000`
-2. 在电脑 B 运行端口发布器。
+2. 在电脑 B 运行 portshare。
 3. 在电脑 A 登录同一个 Tailscale tailnet。
 
 ## tailnet 验收
 
-1. 在端口发布器中刷新发现。
+1. 在 portshare 中刷新发现。
 2. 选择 `127.0.0.1:3000`。
 3. 点击“开放到 tailnet”。
 4. 在电脑 A 浏览器访问界面显示的 MagicDNS 地址。

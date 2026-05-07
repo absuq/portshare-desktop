@@ -6,10 +6,21 @@ import (
 	"github.com/absuq/portshare-desktop/internal/domain"
 )
 
+func TestAppTitleIsPortshareInAllLanguages(t *testing.T) {
+	zh := NewCatalog(domain.LanguageChinese)
+	if got := zh.T(KeyAppTitle); got != "portshare" {
+		t.Fatalf("expected Chinese app title to stay portshare, got %q", got)
+	}
+	en := NewCatalog(domain.LanguageEnglish)
+	if got := en.T(KeyAppTitle); got != "portshare" {
+		t.Fatalf("expected English app title to stay portshare, got %q", got)
+	}
+}
+
 func TestDefaultChineseStrings(t *testing.T) {
 	c := NewCatalog(domain.LanguageChinese)
-	if got := c.T(KeyAppTitle); got != "端口发布器" {
-		t.Fatalf("expected Chinese app title, got %q", got)
+	if got := c.T(KeyAddService); got != "添加服务" {
+		t.Fatalf("expected Chinese add service text, got %q", got)
 	}
 }
 
@@ -22,8 +33,8 @@ func TestEnglishSwitch(t *testing.T) {
 
 func TestEmptyLanguageDefaultsToChinese(t *testing.T) {
 	c := NewCatalog("")
-	if got := c.T(KeyAppTitle); got != "端口发布器" {
-		t.Fatalf("expected Chinese app title, got %q", got)
+	if got := c.T(KeyServices); got != "服务" {
+		t.Fatalf("expected empty language to default to Chinese services text, got %q", got)
 	}
 }
 

@@ -44,7 +44,7 @@ func (c Catalog) T(key Key) string {
 }
 
 var zh = map[Key]string{
-	KeyAppTitle:       "端口发布器",
+	KeyAppTitle:       "portshare",
 	KeyServices:       "服务",
 	KeyHistory:        "历史",
 	KeySettings:       "设置",
@@ -60,7 +60,7 @@ var zh = map[Key]string{
 }
 
 var en = map[Key]string{
-	KeyAppTitle:       "PortShare",
+	KeyAppTitle:       "portshare",
 	KeyServices:       "Services",
 	KeyHistory:        "History",
 	KeySettings:       "Settings",

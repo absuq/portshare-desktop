@@ -9,7 +9,7 @@ func (a *App) configureTray() {
 	if !ok {
 		return
 	}
-	menu := fyne.NewMenu("端口发布器",
+	menu := fyne.NewMenu("portshare",
 		fyne.NewMenuItem("打开主界面", func() {
 			if a.window != nil {
 				a.window.Show()

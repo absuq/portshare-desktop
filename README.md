@@ -1,4 +1,4 @@
-# 端口发布器
+# portshare
 
 一个 Go + Fyne 桌面工具，用于把本机 HTTP/HTTPS 服务发布到 Tailscale tailnet，必要时手动开启公网访问。
 
