@@ -2,6 +2,8 @@ package direct
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"time"
 
@@ -31,21 +33,87 @@ type PairedPeer struct {
 func (c Client) Pair(ctx context.Context, address string) (PairedPeer, error) {
 	var zero PairedPeer
 
-	dialer := net.Dialer{}
-	conn, err := dialer.DialContext(ctx, "tcp", address)
+	conn, peer, stopCancelWatcher, err := c.authenticate(ctx, address)
 	if err != nil {
 		return zero, err
 	}
 	defer conn.Close()
+	defer stopCancelWatcher()
+
+	return peer, nil
+}
+
+func (c Client) OpenTCP(ctx context.Context, peerAddress, targetHost string, targetPort int) (net.Conn, error) {
+	conn, _, stopCancelWatcher, err := c.authenticate(ctx, peerAddress)
+	if err != nil {
+		return nil, err
+	}
+
+	closeOnError := true
+	defer func() {
+		stopCancelWatcher()
+		if closeOnError {
+			_ = conn.Close()
+		}
+	}()
+
+	contextErr := func(err error) error {
+		if err == nil {
+			return nil
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return err
+	}
+
+	if err := protocol.WriteFrame(conn, protocol.ControlMessage{
+		Type:       protocol.TypeOpenTCP,
+		Version:    protocol.Version,
+		TargetHost: targetHost,
+		TargetPort: targetPort,
+	}); err != nil {
+		return nil, contextErr(err)
+	}
+
+	var response protocol.ControlMessage
+	if err := protocol.ReadFrame(conn, &response); err != nil {
+		return nil, contextErr(err)
+	}
+	switch {
+	case response.Type == protocol.TypeOpenTCPOK && response.Version == protocol.Version:
+		_ = conn.SetDeadline(time.Time{})
+		closeOnError = false
+		return conn, nil
+	case response.Type == protocol.TypeOpenTCPError && response.Error != "":
+		return nil, errors.New(response.Error)
+	default:
+		return nil, fmt.Errorf("unexpected open_tcp response: %s", response.Type)
+	}
+}
+
+func (c Client) authenticate(ctx context.Context, address string) (net.Conn, PairedPeer, func(), error) {
+	var zero PairedPeer
+
+	dialer := net.Dialer{}
+	conn, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return nil, zero, func() {}, err
+	}
 	stopCancelWatcher := make(chan struct{})
-	defer close(stopCancelWatcher)
+	stopOnce := make(chan struct{})
 	go func() {
+		defer close(stopOnce)
 		select {
 		case <-ctx.Done():
 			_ = conn.Close()
 		case <-stopCancelWatcher:
 		}
 	}()
+	stop := func() {
+		close(stopCancelWatcher)
+		<-stopOnce
+	}
 
 	contextErr := func(err error) error {
 		if err == nil {
@@ -65,7 +133,9 @@ func (c Client) Pair(ctx context.Context, address string) (PairedPeer, error) {
 
 	initiatorNonce, err := protocol.NewNonce()
 	if err != nil {
-		return zero, err
+		stop()
+		_ = conn.Close()
+		return nil, zero, func() {}, err
 	}
 	if err := protocol.WriteFrame(conn, protocol.ControlMessage{
 		Type:       protocol.TypeHello,
@@ -74,17 +144,23 @@ func (c Client) Pair(ctx context.Context, address string) (PairedPeer, error) {
 		DeviceName: c.config.DeviceName,
 		Nonce:      initiatorNonce,
 	}); err != nil {
-		return zero, contextErr(err)
+		stop()
+		_ = conn.Close()
+		return nil, zero, func() {}, contextErr(err)
 	}
 
 	var response protocol.ControlMessage
 	if err := protocol.ReadFrame(conn, &response); err != nil {
-		return zero, contextErr(err)
+		stop()
+		_ = conn.Close()
+		return nil, zero, func() {}, contextErr(err)
 	}
 	if response.Type != protocol.TypeHelloResp ||
 		response.Version != protocol.Version ||
 		!protocol.VerifyProof(c.config.Secret, response.DeviceID, c.config.DeviceID, initiatorNonce, response.Nonce, response.Proof) {
-		return zero, ErrAuthFailed
+		stop()
+		_ = conn.Close()
+		return nil, zero, func() {}, ErrAuthFailed
 	}
 
 	clientProof := protocol.ComputeProof(c.config.Secret, c.config.DeviceID, response.DeviceID, initiatorNonce, response.Nonce)
@@ -93,20 +169,26 @@ func (c Client) Pair(ctx context.Context, address string) (PairedPeer, error) {
 		Version: protocol.Version,
 		Proof:   clientProof,
 	}); err != nil {
-		return zero, contextErr(err)
+		stop()
+		_ = conn.Close()
+		return nil, zero, func() {}, contextErr(err)
 	}
 
 	var authOK protocol.ControlMessage
 	if err := protocol.ReadFrame(conn, &authOK); err != nil {
-		return zero, contextErr(err)
+		stop()
+		_ = conn.Close()
+		return nil, zero, func() {}, contextErr(err)
 	}
 	if authOK.Type != protocol.TypeAuthOK || authOK.Version != protocol.Version {
-		return zero, ErrAuthFailed
+		stop()
+		_ = conn.Close()
+		return nil, zero, func() {}, ErrAuthFailed
 	}
 
-	return PairedPeer{
+	return conn, PairedPeer{
 		DeviceID:   response.DeviceID,
 		DeviceName: response.DeviceName,
 		Address:    address,
-	}, nil
+	}, stop, nil
 }

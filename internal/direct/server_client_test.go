@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -80,6 +81,20 @@ func TestServerCloseStopsServe(t *testing.T) {
 	}
 }
 
+func TestServerAddActiveRejectsAfterClose(t *testing.T) {
+	server := NewServer(ServerConfig{DeviceID: "device-b", DeviceName: "desktop-b", Secret: "shared"})
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	control, target := net.Pipe()
+	defer control.Close()
+	defer target.Close()
+	if server.addActive(control, target) {
+		t.Fatal("expected addActive to reject connections after Close")
+	}
+}
+
 func TestServerRejectsConnectionsAfterClose(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -106,6 +121,81 @@ func TestServerRejectsConnectionsAfterClose(t *testing.T) {
 	if _, err := client.Pair(ctx, address); err == nil {
 		t.Fatal("expected pairing to fail after server close")
 	}
+}
+
+func TestServerCloseClosesAcceptedHandshakeConnection(t *testing.T) {
+	base, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener := &readNotifyListener{
+		Listener:    base,
+		readStarted: make(chan struct{}),
+	}
+
+	server := NewServer(ServerConfig{DeviceID: "device-b", DeviceName: "desktop-b", Secret: "shared"})
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(listener) }()
+
+	conn, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	select {
+	case <-listener.readStarted:
+	case <-time.After(time.Second):
+		t.Fatal("server handler did not start reading handshake")
+	}
+
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected Serve to stop cleanly, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected Serve to return after Close")
+	}
+
+	initiatorNonce, err := protocol.NewNonce()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(200 * time.Millisecond))
+	if err := protocol.WriteFrame(conn, protocol.ControlMessage{
+		Type:     protocol.TypeHello,
+		Version:  protocol.Version,
+		DeviceID: "device-a",
+		Nonce:    initiatorNonce,
+	}); err != nil {
+		return
+	}
+
+	var response protocol.ControlMessage
+	if err := protocol.ReadFrame(conn, &response); err != nil {
+		return
+	}
+	if response.Type != protocol.TypeHelloResp {
+		t.Fatalf("expected closed handshake connection, got %+v", response)
+	}
+
+	proof := protocol.ComputeProof("shared", "device-a", response.DeviceID, initiatorNonce, response.Nonce)
+	if err := protocol.WriteFrame(conn, protocol.ControlMessage{
+		Type:    protocol.TypeAuthProof,
+		Version: protocol.Version,
+		Proof:   proof,
+	}); err != nil {
+		return
+	}
+	var authOK protocol.ControlMessage
+	if err := protocol.ReadFrame(conn, &authOK); err != nil {
+		return
+	}
+	t.Fatalf("expected closed handshake connection, got %+v", authOK)
 }
 
 func TestPairReturnsContextCancellation(t *testing.T) {
@@ -341,4 +431,28 @@ func TestServerAuthOKIncludesDeviceMetadata(t *testing.T) {
 		authOK.DeviceName != "desktop-b" {
 		t.Fatalf("unexpected auth_ok: %+v", authOK)
 	}
+}
+
+type readNotifyListener struct {
+	net.Listener
+	readStarted chan struct{}
+	once        sync.Once
+}
+
+func (l *readNotifyListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &readNotifyConn{Conn: conn, notify: func() { l.once.Do(func() { close(l.readStarted) }) }}, nil
+}
+
+type readNotifyConn struct {
+	net.Conn
+	notify func()
+}
+
+func (c *readNotifyConn) Read(p []byte) (int, error) {
+	c.notify()
+	return c.Conn.Read(p)
 }
