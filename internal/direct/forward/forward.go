@@ -14,7 +14,11 @@ type Options struct {
 	PeerAddress  string
 	TargetHost   string
 	TargetPort   int
-	DirectClient direct.Client
+	DirectClient DirectClient
+}
+
+type DirectClient interface {
+	OpenTCP(context.Context, string, string, int) (net.Conn, error)
 }
 
 type Forward struct {
@@ -24,6 +28,7 @@ type Forward struct {
 	listener net.Listener
 	active   map[net.Conn]struct{}
 	stopped  bool
+	cancel   context.CancelFunc
 }
 
 func New(options Options) *Forward {
@@ -35,21 +40,33 @@ func New(options Options) *Forward {
 }
 
 func (f *Forward) Start(ctx context.Context) error {
+	if f.options.DirectClient == nil {
+		return errors.New("direct client is not configured")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	if f.listener != nil {
 		f.mu.Unlock()
 		return errors.New("forward already started")
 	}
+	runCtx, cancel := context.WithCancel(ctx)
 	listener, err := net.Listen("tcp", f.options.LocalAddress)
 	if err != nil {
 		f.mu.Unlock()
+		cancel()
 		return err
 	}
 	f.listener = listener
+	f.cancel = cancel
 	f.stopped = false
 	f.mu.Unlock()
 
-	go f.acceptLoop(ctx, listener)
+	go f.acceptLoop(runCtx, listener)
 	return nil
 }
 
@@ -65,6 +82,8 @@ func (f *Forward) LocalAddress() string {
 func (f *Forward) Stop() {
 	f.mu.Lock()
 	f.stopped = true
+	cancel := f.cancel
+	f.cancel = nil
 	listener := f.listener
 	f.listener = nil
 	active := make([]net.Conn, 0, len(f.active))
@@ -72,6 +91,9 @@ func (f *Forward) Stop() {
 		active = append(active, conn)
 	}
 	f.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	if listener != nil {
 		_ = listener.Close()
 	}
@@ -110,6 +132,7 @@ func (f *Forward) clearListener(listener net.Listener) {
 	defer f.mu.Unlock()
 	if f.listener == listener {
 		f.listener = nil
+		f.cancel = nil
 	}
 }
 

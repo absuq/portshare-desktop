@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -157,6 +158,74 @@ func TestForwardStartTwiceReturnsErrorAndStopIsIdempotent(t *testing.T) {
 	fwd.Stop()
 }
 
+func TestForwardStartRequiresDirectClient(t *testing.T) {
+	fwd := New(Options{
+		LocalAddress: "127.0.0.1:0",
+		PeerAddress:  "127.0.0.1:1",
+		TargetHost:   "127.0.0.1",
+		TargetPort:   1,
+	})
+	if err := fwd.Start(context.Background()); err == nil {
+		t.Fatal("expected missing direct client error")
+	}
+}
+
+func TestForwardStartRejectsCanceledContext(t *testing.T) {
+	client := direct.NewClient(direct.ClientConfig{DeviceID: "device-a", DeviceName: "desktop-a", Secret: "shared"})
+	fwd := New(Options{
+		LocalAddress: "127.0.0.1:0",
+		PeerAddress:  "127.0.0.1:1",
+		TargetHost:   "127.0.0.1",
+		TargetPort:   1,
+		DirectClient: client,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := fwd.Start(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if got := fwd.LocalAddress(); got != "" {
+		t.Fatalf("expected no listener after canceled start, got %q", got)
+	}
+}
+
+func TestForwardStopCancelsPendingOpenTCP(t *testing.T) {
+	client := newBlockingDirectClient()
+	fwd := New(Options{
+		LocalAddress: "127.0.0.1:0",
+		PeerAddress:  "127.0.0.1:1",
+		TargetHost:   "127.0.0.1",
+		TargetPort:   1,
+		DirectClient: client,
+	})
+	if err := fwd.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err := net.Dial("tcp", fwd.LocalAddress())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	select {
+	case <-client.entered:
+	case <-time.After(time.Second):
+		t.Fatal("expected OpenTCP to start")
+	}
+
+	fwd.Stop()
+	select {
+	case err := <-client.done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected Stop to cancel pending OpenTCP")
+	}
+}
+
 func TestOpenTCPReturnsTargetDialFailure(t *testing.T) {
 	server, control := startDirectServer(t)
 	defer server.Close()
@@ -270,4 +339,27 @@ func reserveUnusedPort(t *testing.T) int {
 		t.Fatal(err)
 	}
 	return port
+}
+
+type blockingDirectClient struct {
+	entered chan struct{}
+	done    chan error
+	once    sync.Once
+}
+
+func newBlockingDirectClient() *blockingDirectClient {
+	return &blockingDirectClient{
+		entered: make(chan struct{}),
+		done:    make(chan error, 1),
+	}
+}
+
+func (c *blockingDirectClient) OpenTCP(ctx context.Context, peerAddress, targetHost string, targetPort int) (net.Conn, error) {
+	_ = peerAddress
+	_ = targetHost
+	_ = targetPort
+	c.once.Do(func() { close(c.entered) })
+	<-ctx.Done()
+	c.done <- ctx.Err()
+	return nil, ctx.Err()
 }
