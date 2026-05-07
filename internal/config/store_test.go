@@ -29,3 +29,21 @@ func TestStoreRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected config: %+v", got)
 	}
 }
+
+func TestStoreRoundTripDirectModeFields(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(filepath.Join(dir, "config.json"))
+	cfg := Default()
+	cfg.DirectControlPort = 19001
+	cfg.DirectPeersPath = filepath.Join(dir, "peers.json")
+	if err := store.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DirectControlPort != cfg.DirectControlPort || got.DirectPeersPath != cfg.DirectPeersPath {
+		t.Fatalf("unexpected direct config: %+v", got)
+	}
+}

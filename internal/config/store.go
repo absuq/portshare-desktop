@@ -11,20 +11,23 @@ import (
 )
 
 type Config struct {
-	Language         domain.Language `json:"language"`
-	AuditRetention   time.Duration   `json:"audit_retention"`
-	MinimizeToTray   bool            `json:"minimize_to_tray"`
-	ConfirmOnExit    bool            `json:"confirm_on_exit"`
-	DefaultPublicTTL time.Duration   `json:"default_public_ttl"`
+	Language          domain.Language `json:"language"`
+	AuditRetention    time.Duration   `json:"audit_retention"`
+	MinimizeToTray    bool            `json:"minimize_to_tray"`
+	ConfirmOnExit     bool            `json:"confirm_on_exit"`
+	DefaultPublicTTL  time.Duration   `json:"default_public_ttl"`
+	DirectControlPort int             `json:"direct_control_port"`
+	DirectPeersPath   string          `json:"direct_peers_path"`
 }
 
 func Default() Config {
 	return Config{
-		Language:         domain.LanguageChinese,
-		AuditRetention:   365 * 24 * time.Hour,
-		MinimizeToTray:   true,
-		ConfirmOnExit:    true,
-		DefaultPublicTTL: 30 * time.Minute,
+		Language:          domain.LanguageChinese,
+		AuditRetention:    365 * 24 * time.Hour,
+		MinimizeToTray:    true,
+		ConfirmOnExit:     true,
+		DefaultPublicTTL:  30 * time.Minute,
+		DirectControlPort: 17890,
 	}
 }
 
