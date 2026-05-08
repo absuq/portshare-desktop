@@ -65,6 +65,10 @@ func (f *fakeDirectManager) TrustedPeers(context.Context) ([]directmanager.Trust
 	return append([]directmanager.TrustedPeer(nil), f.peers...), nil
 }
 
+func (f *fakeDirectManager) LocalhostBridgePorts() []int {
+	return []int{18789, 3000}
+}
+
 func TestDirectControllerRefreshShowsReadyState(t *testing.T) {
 	mgr := &fakeDirectManager{ready: directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104", Code: tailscale.CodeOK}}
 	ctrl := NewDirectController(mgr)
@@ -79,6 +83,9 @@ func TestDirectControllerRefreshShowsReadyState(t *testing.T) {
 	}
 	if len(state.Peers) != 0 {
 		t.Fatalf("expected empty peers, got %+v", state)
+	}
+	if len(state.LocalhostBridgePorts) != 2 || state.LocalhostBridgePorts[0] != 18789 {
+		t.Fatalf("expected localhost bridge ports in state, got %+v", state.LocalhostBridgePorts)
 	}
 }
 
@@ -374,6 +381,19 @@ func TestPeerDisplayMetaShowsFullAccessAuthorization(t *testing.T) {
 	}
 	if got := peerDisplayMeta(peer); !strings.Contains(got, "已授权全端口") {
 		t.Fatalf("expected full access authorization in peer meta, got %q", got)
+	}
+}
+
+func TestLocalhostBridgeStatusTextShowsActivePorts(t *testing.T) {
+	state := DirectState{LocalhostBridgePorts: []int{18789, 3000}}
+	if got := localhostBridgeStatusText(state); got != "localhost 桥接：3000, 18789" {
+		t.Fatalf("unexpected localhost bridge status: %q", got)
+	}
+}
+
+func TestLocalhostBridgeStatusTextShowsNone(t *testing.T) {
+	if got := localhostBridgeStatusText(DirectState{}); got != "localhost 桥接：无" {
+		t.Fatalf("unexpected localhost bridge status: %q", got)
 	}
 }
 

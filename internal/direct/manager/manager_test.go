@@ -62,6 +62,61 @@ func (f *fakeAccessAuthorizer) Calls() []TrustedPeerAccess {
 	return append([]TrustedPeerAccess(nil), f.calls...)
 }
 
+type fakeLocalhostBridge struct {
+	mu       sync.Mutex
+	localIP  string
+	peers    []string
+	refresh  int
+	closed   bool
+	active   []int
+	refreshC chan struct{}
+}
+
+func (b *fakeLocalhostBridge) SetLocalTailscaleIP(ip string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.localIP = ip
+}
+
+func (b *fakeLocalhostBridge) SetAllowedPeers(peers []string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.peers = append([]string(nil), peers...)
+}
+
+func (b *fakeLocalhostBridge) Refresh(context.Context) error {
+	b.mu.Lock()
+	b.refresh++
+	refreshC := b.refreshC
+	b.mu.Unlock()
+	if refreshC != nil {
+		select {
+		case refreshC <- struct{}{}:
+		default:
+		}
+	}
+	return nil
+}
+
+func (b *fakeLocalhostBridge) ActivePorts() []int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]int(nil), b.active...)
+}
+
+func (b *fakeLocalhostBridge) Close() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.closed = true
+	return nil
+}
+
+func (b *fakeLocalhostBridge) Snapshot() (string, []string, int, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.localIP, append([]string(nil), b.peers...), b.refresh, b.closed
+}
+
 type MemoryPeerStore struct {
 	mu    sync.Mutex
 	peers []store.TrustedPeer
@@ -157,6 +212,52 @@ func TestStartControlServerCanRestartSameAddress(t *testing.T) {
 	_ = m.StopControlServer(context.Background())
 }
 
+func TestStartControlServerConfiguresLocalhostBridge(t *testing.T) {
+	mem := NewMemoryPeerStore()
+	if err := mem.SavePeers([]store.TrustedPeer{{ID: "device-b", TailscaleIP: "100.109.251.97"}}); err != nil {
+		t.Fatal(err)
+	}
+	bridge := &fakeLocalhostBridge{refreshC: make(chan struct{}, 1)}
+	m := New(Config{
+		PeerStore:       mem,
+		LocalhostBridge: bridge,
+		DeviceID:        "device-a",
+		DeviceName:      "desktop-a",
+	})
+
+	if err := m.StartControlServer(context.Background(), "127.0.0.1:0", "shared"); err != nil {
+		t.Fatal(err)
+	}
+	defer m.StopControlServer(context.Background())
+
+	select {
+	case <-bridge.refreshC:
+	case <-time.After(time.Second):
+		t.Fatal("expected localhost bridge refresh")
+	}
+	localIP, peers, refresh, closed := bridge.Snapshot()
+	if localIP != "127.0.0.1" || len(peers) != 1 || peers[0] != "100.109.251.97" || refresh == 0 || closed {
+		t.Fatalf("unexpected bridge state: localIP=%q peers=%+v refresh=%d closed=%v", localIP, peers, refresh, closed)
+	}
+}
+
+func TestStopControlServerClosesLocalhostBridge(t *testing.T) {
+	bridge := &fakeLocalhostBridge{}
+	m := New(Config{LocalhostBridge: bridge, DeviceID: "device-a", DeviceName: "desktop-a"})
+	if err := m.StartControlServer(context.Background(), "127.0.0.1:0", "shared"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.StopControlServer(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, _, closed := bridge.Snapshot()
+	if !closed {
+		t.Fatal("expected localhost bridge to close when direct mode stops")
+	}
+}
+
 func TestReadyUsesTailscaleReport(t *testing.T) {
 	m := New(Config{Tailscale: fakeTailscale{report: tailscale.ReadyReport{
 		Ready:  true,
@@ -227,6 +328,32 @@ func TestPairPeerAuthorizesTrustedPeerAccess(t *testing.T) {
 	peers := mem.Peers()
 	if len(peers) != 1 || peers[0].AccessAuthorizedAt.IsZero() {
 		t.Fatalf("expected stored peer to record access authorization, got %+v", peers)
+	}
+}
+
+func TestPairPeerRefreshesLocalhostBridgePeers(t *testing.T) {
+	mem := NewMemoryPeerStore()
+	bridge := &fakeLocalhostBridge{}
+	m := New(Config{
+		Tailscale: fakeTailscale{report: tailscale.ReadyReport{
+			Ready:  true,
+			Code:   tailscale.CodeOK,
+			Status: tailscale.Status{LocalIPv4: "100.79.83.104"},
+		}},
+		PairClient: &fakePairClient{peers: map[string]direct.PairedPeer{
+			"100.109.251.97:17890": {DeviceID: "device-b", DeviceName: "desktop-b"},
+		}},
+		PeerStore:       mem,
+		LocalhostBridge: bridge,
+	})
+
+	if _, err := m.PairPeer(context.Background(), "100.109.251.97:17890"); err != nil {
+		t.Fatal(err)
+	}
+
+	localIP, peers, refresh, _ := bridge.Snapshot()
+	if localIP != "100.79.83.104" || len(peers) != 1 || peers[0] != "100.109.251.97" || refresh == 0 {
+		t.Fatalf("unexpected bridge state after pair: localIP=%q peers=%+v refresh=%d", localIP, peers, refresh)
 	}
 }
 

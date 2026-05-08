@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,8 +31,9 @@ func (a *App) buildMainWindow() fyne.Window {
 	statusLabel.TextStyle = fyne.TextStyle{Bold: true}
 	ipLabel := widget.NewLabel("本机 IP：-")
 	controlLabel := widget.NewLabel("portshare：未启用")
+	bridgeLabel := widget.NewLabel("localhost 桥接：无")
 	messageLabel := widget.NewLabel("准备就绪")
-	for _, label := range []*widget.Label{statusLabel, ipLabel, controlLabel, messageLabel} {
+	for _, label := range []*widget.Label{statusLabel, ipLabel, controlLabel, bridgeLabel, messageLabel} {
 		label.Wrapping = fyne.TextWrapWord
 	}
 
@@ -146,6 +149,7 @@ func (a *App) buildMainWindow() fyne.Window {
 		} else {
 			controlLabel.SetText("portshare：未启用")
 		}
+		bridgeLabel.SetText(localhostBridgeStatusText(state))
 		if state.Message != "" {
 			messageLabel.SetText(state.Message)
 		}
@@ -159,7 +163,7 @@ func (a *App) buildMainWindow() fyne.Window {
 	}
 	a.refreshUI = render
 
-	statusBand := container.NewVBox(statusLabel, ipLabel, controlLabel, messageLabel)
+	statusBand := container.NewVBox(statusLabel, ipLabel, controlLabel, bridgeLabel, messageLabel)
 	setupPanel := container.NewVBox(
 		widget.NewLabel("直连密钥"),
 		secretEntry,
@@ -243,4 +247,17 @@ func pairSuccessDialogMessage(state DirectState) string {
 		return state.Message
 	}
 	return "配对成功，已授权对方 Tailscale IP 访问本机全端口。"
+}
+
+func localhostBridgeStatusText(state DirectState) string {
+	if len(state.LocalhostBridgePorts) == 0 {
+		return "localhost 桥接：无"
+	}
+	ports := append([]int(nil), state.LocalhostBridgePorts...)
+	sort.Ints(ports)
+	parts := make([]string, 0, len(ports))
+	for _, port := range ports {
+		parts = append(parts, strconv.Itoa(port))
+	}
+	return "localhost 桥接：" + strings.Join(parts, ", ")
 }

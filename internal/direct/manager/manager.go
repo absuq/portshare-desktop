@@ -23,6 +23,7 @@ type Config struct {
 	PairClient       PairClient
 	PeerStore        PeerStore
 	AccessAuthorizer AccessAuthorizer
+	LocalhostBridge  LocalhostBridge
 	SecretLabel      string
 	DeviceID         string
 	DeviceName       string
@@ -33,6 +34,7 @@ type Manager struct {
 	pairClient       PairClient
 	peerStore        PeerStore
 	accessAuthorizer AccessAuthorizer
+	localhostBridge  LocalhostBridge
 	secretLabel      string
 	deviceID         string
 	deviceName       string
@@ -41,6 +43,7 @@ type Manager struct {
 	controlMu       sync.Mutex
 	controlServer   *direct.Server
 	controlListener net.Listener
+	bridgeCancel    context.CancelFunc
 	peerMu          sync.Mutex
 }
 
@@ -52,6 +55,14 @@ type PairClient interface {
 
 type AccessAuthorizer interface {
 	AllowTrustedPeer(context.Context, TrustedPeerAccess) error
+}
+
+type LocalhostBridge interface {
+	SetLocalTailscaleIP(string)
+	SetAllowedPeers([]string)
+	Refresh(context.Context) error
+	ActivePorts() []int
+	Close() error
 }
 
 type TrustedPeerAccess struct {
@@ -82,6 +93,7 @@ func New(config Config) *Manager {
 		pairClient:       config.PairClient,
 		peerStore:        config.PeerStore,
 		accessAuthorizer: config.AccessAuthorizer,
+		localhostBridge:  config.LocalhostBridge,
 		secretLabel:      config.SecretLabel,
 		deviceID:         config.DeviceID,
 		deviceName:       config.DeviceName,
@@ -157,10 +169,15 @@ func (m *Manager) StartControlServer(ctx context.Context, listenAddress string, 
 	m.controlMu.Lock()
 	oldServer := m.controlServer
 	oldListener := m.controlListener
+	oldBridgeCancel := m.bridgeCancel
 	m.controlServer = server
 	m.controlListener = listener
+	m.bridgeCancel = nil
 	m.controlMu.Unlock()
 
+	if oldBridgeCancel != nil {
+		oldBridgeCancel()
+	}
 	if oldServer != nil {
 		_ = oldServer.Close()
 	}
@@ -173,6 +190,7 @@ func (m *Manager) StartControlServer(ctx context.Context, listenAddress string, 
 	m.secretLabel = store.DeriveSecretLabel(secret)
 	m.authMu.Unlock()
 
+	m.startLocalhostBridgePolling(ctx, hostFromAddress(listener.Addr().String()))
 	go func() { _ = server.Serve(listener) }()
 	return nil
 }
@@ -182,10 +200,18 @@ func (m *Manager) StopControlServer(ctx context.Context) error {
 	m.controlMu.Lock()
 	server := m.controlServer
 	listener := m.controlListener
+	bridgeCancel := m.bridgeCancel
 	m.controlServer = nil
 	m.controlListener = nil
+	m.bridgeCancel = nil
 	m.controlMu.Unlock()
 
+	if bridgeCancel != nil {
+		bridgeCancel()
+	}
+	if m.localhostBridge != nil {
+		_ = m.localhostBridge.Close()
+	}
 	if server != nil {
 		_ = server.Close()
 	}
@@ -248,6 +274,7 @@ func (m *Manager) PairPeer(ctx context.Context, address string) (PairedPeer, err
 	if err := m.peerStore.SavePeers(peers); err != nil {
 		return PairedPeer{}, err
 	}
+	_ = m.refreshLocalhostBridge(ctx)
 	return peer, nil
 }
 
@@ -272,7 +299,10 @@ func (m *Manager) TrustAuthenticatedPeer(ctx context.Context, peer direct.Paired
 		return err
 	}
 	peers = upsertTrustedPeer(peers, trusted)
-	return m.peerStore.SavePeers(peers)
+	if err := m.peerStore.SavePeers(peers); err != nil {
+		return err
+	}
+	return m.refreshLocalhostBridge(ctx)
 }
 
 func (m *Manager) TrustedPeers(ctx context.Context) ([]TrustedPeer, error) {
@@ -283,6 +313,73 @@ func (m *Manager) TrustedPeers(ctx context.Context) ([]TrustedPeer, error) {
 	m.peerMu.Lock()
 	defer m.peerMu.Unlock()
 	return m.peerStore.LoadPeers()
+}
+
+func (m *Manager) LocalhostBridgePorts() []int {
+	if m.localhostBridge == nil {
+		return nil
+	}
+	return m.localhostBridge.ActivePorts()
+}
+
+func (m *Manager) startLocalhostBridgePolling(ctx context.Context, localIP string) {
+	if m.localhostBridge == nil {
+		return
+	}
+	bridgeCtx, cancel := context.WithCancel(context.Background())
+	m.controlMu.Lock()
+	m.bridgeCancel = cancel
+	m.controlMu.Unlock()
+
+	m.localhostBridge.SetLocalTailscaleIP(localIP)
+	_ = m.refreshLocalhostBridge(ctx)
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-bridgeCtx.Done():
+				return
+			case <-ticker.C:
+				_ = m.refreshLocalhostBridge(bridgeCtx)
+			}
+		}
+	}()
+}
+
+func (m *Manager) refreshLocalhostBridge(ctx context.Context) error {
+	if m.localhostBridge == nil {
+		return nil
+	}
+	m.localhostBridge.SetLocalTailscaleIP(m.localTailscaleIP(ctx))
+	m.localhostBridge.SetAllowedPeers(m.trustedPeerIPs(ctx))
+	return m.localhostBridge.Refresh(ctx)
+}
+
+func (m *Manager) trustedPeerIPs(ctx context.Context) []string {
+	_ = ctx
+	if m.peerStore == nil {
+		return nil
+	}
+	peers, err := m.peerStore.LoadPeers()
+	if err != nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var ips []string
+	for _, peer := range peers {
+		ip := strings.TrimSpace(peer.TailscaleIP)
+		if ip == "" {
+			continue
+		}
+		if _, ok := seen[ip]; ok {
+			continue
+		}
+		seen[ip] = struct{}{}
+		ips = append(ips, ip)
+	}
+	return ips
 }
 
 func (m *Manager) buildAndAuthorizeTrustedPeer(ctx context.Context, peer direct.PairedPeer, address string, secretLabel string) (store.TrustedPeer, error) {

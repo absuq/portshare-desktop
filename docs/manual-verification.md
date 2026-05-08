@@ -59,6 +59,37 @@
    netsh advfirewall firewall show rule name=all | findstr portshare
    ```
 
+## localhost 桥接验证
+
+1. 在电脑 B 上启动一个只监听 localhost 的 TCP 服务。例如：
+
+   ```powershell
+   python -m http.server 18789 --bind 127.0.0.1
+   ```
+
+2. 在电脑 B 上确认服务只监听 `127.0.0.1`：
+
+   ```powershell
+   netstat -ano -p tcp | findstr :18789
+   ```
+
+3. 在电脑 B 的 `portshare` 中确认状态区出现：
+
+   ```text
+   localhost 桥接：18789
+   ```
+
+   如果没有出现，等待 5 秒后点击“检测 Tailscale”刷新状态。
+
+4. 在电脑 A 上访问电脑 B 的 Tailscale IP 同端口：
+
+   ```powershell
+   Test-NetConnection <computer-b-tailscale-ip> -Port 18789
+   curl.exe http://<computer-b-tailscale-ip>:18789/
+   ```
+
+5. 确认 `TcpTestSucceeded` 为 `True`，并且 HTTP 请求能返回电脑 B 上的本地服务内容。
+
 ## 关闭验证
 
 1. 在电脑 B 退出 `portshare`。
@@ -75,10 +106,13 @@
 ## 边界说明
 
 - 当前 MVP 不提供本地业务端口转发。
-- 当前 MVP 不代理业务流量，但配对成功后会为对方 Tailscale IP 写入本机 TCP/UDP 全端口入站允许规则。
+- 当前 MVP 不提供手动业务端口转发。
+- 当前 MVP 会自动桥接只监听 `127.0.0.1` 的 TCP 服务，让可信设备通过本机 Tailscale IP 同端口访问。
+- 当前 MVP 不桥接 UDP localhost 服务。
+- 配对成功后会为对方 Tailscale IP 写入本机 TCP/UDP 全端口入站允许规则。
 - 关闭 `portshare` 只会停止 `portshare` 自己的控制监听，不会关闭 Tailscale。
 - 没有服务监听的端口仍然不会连通。
-- 只绑定 `127.0.0.1` 的服务仍然不能通过 Tailscale IP 访问。
+- 只绑定 `127.0.0.1` 的 TCP 服务需要等待 `portshare` 自动桥接后才能通过 Tailscale IP 访问。
 - 如果 Tailscale ACL 禁止两台设备互访，`portshare` 不能绕过 ACL。
 - 如果关闭 `portshare` 后两台电脑仍能访问彼此某些端口，那是 Tailscale tailnet、Tailscale ACL、Windows 防火墙规则和服务监听状态共同决定的结果，不是 `portshare` 仍在转发。
 
@@ -91,5 +125,6 @@
 - 配对成功/失败结果。
 - Windows 防火墙规则是否创建成功。
 - 实际服务端口是否能通过对方 Tailscale IP 访问。
+- localhost-only TCP 服务是否自动桥接成功。
 - 错误提示是否能说明下一步该检查什么。
 - 关闭 `portshare` 后 `17890` 是否停止响应。

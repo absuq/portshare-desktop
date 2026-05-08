@@ -23,6 +23,8 @@
 
 配对成功后，`portshare` 会为对方 Tailscale IP 写入 Windows 防火墙入站允许规则，授权 TCP/UDP 全端口访问本机 Tailscale IP。Windows 构建已嵌入 `requireAdministrator` manifest，启动时会触发 UAC 管理员授权。没有服务监听、服务只绑定 `127.0.0.1`、或 Tailscale ACL 阻止互访时，端口仍然不会连通。
 
+方案 A 已确认并实现：`portshare` 会自动扫描本机 TCP 监听。如果服务只监听 `127.0.0.1:<port>`，会自动创建 `<本机 Tailscale IP>:<port> -> 127.0.0.1:<port>` 的 localhost 桥接，并只允许可信设备 IP 连接。扫描周期为 5 秒。
+
 ## 已完成
 
 - 可见产品名统一为 `portshare`。
@@ -36,6 +38,7 @@
 - Windows exe 启动时请求管理员权限。
 - 发起方配对成功后授权对方 Tailscale IP 访问本机。
 - 响应方认证成功后保存并授权发起方 Tailscale IP。
+- 新增自动 localhost TCP 桥接：loopback-only 服务可通过 Tailscale IP 同端口访问。
 - 手动验收文档已切换为双机配对验收步骤。
 
 ## 本地验证命令
@@ -54,8 +57,9 @@ Windows 桌面版必须通过 `scripts\build-windows.ps1` 构建；脚本会加 
 
 ## 下一步
 
-1. 按 `docs/manual-verification.md` 做真实双机配对和全端口访问验收。
+1. 按 `docs/manual-verification.md` 做真实双机配对、全端口访问和 localhost 桥接验收。
 2. 在 UI 中展示 `tailscale ping` 的 direct/DERP 路由与延迟。
 3. 增加可信设备删除，并同步删除对应 Windows 防火墙规则。
-4. 增加更清晰的 Tailscale DNS/Shields Up/Windows 防火墙故障提示。
-5. 单独设计下一阶段“公网转发”能力。
+4. 增加 localhost bridge 删除/暂停策略。
+5. 增加更清晰的 Tailscale DNS/Shields Up/Windows 防火墙故障提示。
+6. 单独设计下一阶段“公网转发”能力。

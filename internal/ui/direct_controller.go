@@ -27,6 +27,7 @@ type DirectManager interface {
 	StartControlServer(context.Context, string, string) error
 	StopControlServer(context.Context) error
 	ControlAddress() string
+	LocalhostBridgePorts() []int
 	PairPeer(context.Context, string) (directmanager.PairedPeer, error)
 	TrustedPeers(context.Context) ([]directmanager.TrustedPeer, error)
 }
@@ -37,13 +38,14 @@ type DirectController struct {
 }
 
 type DirectState struct {
-	Ready            bool
-	LocalTailscaleIP string
-	ControlListening bool
-	ControlAddress   string
-	DiagnosticCode   tailscale.DiagnosticCode
-	Message          string
-	Peers            []directmanager.TrustedPeer
+	Ready                bool
+	LocalTailscaleIP     string
+	ControlListening     bool
+	ControlAddress       string
+	LocalhostBridgePorts []int
+	DiagnosticCode       tailscale.DiagnosticCode
+	Message              string
+	Peers                []directmanager.TrustedPeer
 }
 
 func NewDirectController(manager DirectManager) *DirectController {
@@ -105,6 +107,7 @@ func (c *DirectController) Refresh(ctx context.Context) error {
 	c.state.LocalTailscaleIP = ready.LocalTailscaleIP
 	c.state.DiagnosticCode = ready.Code
 	c.updateControlState()
+	c.state.LocalhostBridgePorts = copyInts(c.manager.LocalhostBridgePorts())
 	peers, err := c.manager.TrustedPeers(ctx)
 	if err != nil {
 		c.state.Message = "读取可信设备失败：" + err.Error()
@@ -181,6 +184,7 @@ func describePairError(address string, err error) error {
 func (c *DirectController) State() DirectState {
 	state := c.state
 	state.Peers = copyTrustedPeers(state.Peers)
+	state.LocalhostBridgePorts = copyInts(state.LocalhostBridgePorts)
 	return state
 }
 
@@ -275,4 +279,8 @@ func displayPeerName(name, id string) string {
 
 func copyTrustedPeers(peers []directmanager.TrustedPeer) []directmanager.TrustedPeer {
 	return append([]directmanager.TrustedPeer(nil), peers...)
+}
+
+func copyInts(values []int) []int {
+	return append([]int(nil), values...)
 }

@@ -10,6 +10,7 @@ import (
 	directmanager "github.com/absuq/portshare-desktop/internal/direct/manager"
 	directstore "github.com/absuq/portshare-desktop/internal/direct/store"
 	"github.com/absuq/portshare-desktop/internal/firewall"
+	"github.com/absuq/portshare-desktop/internal/localhostbridge"
 	tailscalediag "github.com/absuq/portshare-desktop/internal/tailscale"
 	"github.com/absuq/portshare-desktop/internal/ui"
 )
@@ -39,6 +40,7 @@ func main() {
 		Tailscale:        tailscalediag.NewClient(nil),
 		PeerStore:        directstore.New(peersPath),
 		AccessAuthorizer: managerFirewallAuthorizer{inner: firewall.NewAuthorizer(nil)},
+		LocalhostBridge:  localhostbridge.NewController(localhostbridge.Config{Scanner: localhostbridge.NewScanner()}),
 		DeviceID:         deviceName,
 		DeviceName:       deviceName,
 	})
