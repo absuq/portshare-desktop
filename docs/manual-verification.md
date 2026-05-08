@@ -4,7 +4,7 @@
 
 1. 两台 Windows 电脑登录同一个 Tailscale tailnet。
 2. 两台电脑都运行同一个版本的 `portshare`。
-3. 建议以管理员身份运行 `portshare`。配对后写入 Windows 防火墙规则需要管理员权限。
+3. 双击启动 `portshare` 时应出现 Windows UAC 管理员授权提示；允许后继续。
 4. 在两台电脑上执行 `tailscale ip -4`，记录各自的 Tailscale IP。
 
 ## Tailscale 诊断

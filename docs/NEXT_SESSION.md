@@ -21,7 +21,7 @@
 
 当前 MVP 不做本地业务端口转发，也不代理任意 TCP 业务流量。关闭 `portshare` 只会停止 `17890` 控制监听，不会关闭 Tailscale 自身的 tailnet 连通性。
 
-配对成功后，`portshare` 会为对方 Tailscale IP 写入 Windows 防火墙入站允许规则，授权 TCP/UDP 全端口访问本机 Tailscale IP。该能力需要以管理员身份运行 `portshare`。没有服务监听、服务只绑定 `127.0.0.1`、或 Tailscale ACL 阻止互访时，端口仍然不会连通。
+配对成功后，`portshare` 会为对方 Tailscale IP 写入 Windows 防火墙入站允许规则，授权 TCP/UDP 全端口访问本机 Tailscale IP。Windows 构建已嵌入 `requireAdministrator` manifest，启动时会触发 UAC 管理员授权。没有服务监听、服务只绑定 `127.0.0.1`、或 Tailscale ACL 阻止互访时，端口仍然不会连通。
 
 ## 已完成
 
@@ -33,6 +33,7 @@
 - `cmd/portshare/main.go` 已注入真实 direct manager。
 - 已移除本地业务端口转发 UI、manager 编排、协议消息和 forward 包。
 - 新增 Windows 防火墙可信设备全端口授权。
+- Windows exe 启动时请求管理员权限。
 - 发起方配对成功后授权对方 Tailscale IP 访问本机。
 - 响应方认证成功后保存并授权发起方 Tailscale IP。
 - 手动验收文档已切换为双机配对验收步骤。
