@@ -38,6 +38,42 @@ func TestPairingSucceedsWithMatchingSecret(t *testing.T) {
 	}
 }
 
+func TestServerCallsOnAuthenticatedForMatchingSecret(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	authenticated := make(chan PairedPeer, 1)
+	server := NewServer(ServerConfig{
+		DeviceID:   "device-b",
+		DeviceName: "desktop-b",
+		Secret:     "shared",
+		OnAuthenticated: func(peer PairedPeer) {
+			authenticated <- peer
+		},
+	})
+	go func() { _ = server.Serve(listener) }()
+	defer server.Close()
+
+	client := NewClient(ClientConfig{DeviceID: "device-a", DeviceName: "desktop-a", Secret: "shared"})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := client.Pair(ctx, listener.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case peer := <-authenticated:
+		if peer.DeviceID != "device-a" || peer.DeviceName != "desktop-a" || peer.Address == "" {
+			t.Fatalf("unexpected authenticated peer: %+v", peer)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected authenticated callback")
+	}
+}
+
 func TestPairingFailsWithWrongSecret(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

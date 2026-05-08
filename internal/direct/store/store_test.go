@@ -13,13 +13,14 @@ func TestStoreRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "peers.json")
 	s := New(path)
 	peer := TrustedPeer{
-		ID:            "peer-1",
-		DisplayName:   "desktop-b",
-		TailscaleIP:   "100.109.251.97",
-		FirstPairedAt: time.Now().UTC(),
-		LastSeenAt:    time.Now().UTC(),
-		LastRoute:     "https://desktop-b.tailnet.example",
-		SecretLabel:   "sha256:abc",
+		ID:                 "peer-1",
+		DisplayName:        "desktop-b",
+		TailscaleIP:        "100.109.251.97",
+		FirstPairedAt:      time.Now().UTC(),
+		LastSeenAt:         time.Now().UTC(),
+		AccessAuthorizedAt: time.Now().UTC(),
+		LastRoute:          "https://desktop-b.tailnet.example",
+		SecretLabel:        "sha256:abc",
 	}
 	if err := s.SavePeers([]TrustedPeer{peer}); err != nil {
 		t.Fatal(err)
@@ -46,13 +47,16 @@ func TestStoreRoundTrip(t *testing.T) {
 	if !got[0].LastSeenAt.Equal(peer.LastSeenAt) {
 		t.Fatalf("LastSeenAt = %v, want %v", got[0].LastSeenAt, peer.LastSeenAt)
 	}
+	if !got[0].AccessAuthorizedAt.Equal(peer.AccessAuthorizedAt) {
+		t.Fatalf("AccessAuthorizedAt = %v, want %v", got[0].AccessAuthorizedAt, peer.AccessAuthorizedAt)
+	}
 	if got[0].LastRoute != peer.LastRoute {
 		t.Fatalf("LastRoute = %q, want %q", got[0].LastRoute, peer.LastRoute)
 	}
 	if got[0].SecretLabel != peer.SecretLabel {
 		t.Fatalf("SecretLabel = %q, want %q", got[0].SecretLabel, peer.SecretLabel)
 	}
-	if got[0].FirstPairedAt.Location() != time.UTC || got[0].LastSeenAt.Location() != time.UTC {
+	if got[0].FirstPairedAt.Location() != time.UTC || got[0].LastSeenAt.Location() != time.UTC || got[0].AccessAuthorizedAt.Location() != time.UTC {
 		t.Fatalf("stored times are not UTC: %+v", got[0])
 	}
 }

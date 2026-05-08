@@ -213,6 +213,9 @@ func peerDisplayName(peer directmanager.TrustedPeer) string {
 
 func peerDisplayMeta(peer directmanager.TrustedPeer) string {
 	parts := []string{valueOrDash(peer.TailscaleIP)}
+	if !peer.AccessAuthorizedAt.IsZero() {
+		parts = append(parts, "已授权全端口")
+	}
 	if peer.LastRoute != "" {
 		parts = append(parts, peer.LastRoute)
 	}
@@ -236,8 +239,8 @@ func valueOrDash(value string) string {
 }
 
 func pairSuccessDialogMessage(state DirectState) string {
-	if strings.HasPrefix(state.Message, "已配对：") {
+	if strings.HasPrefix(state.Message, "已配对并授权全端口访问：") {
 		return state.Message
 	}
-	return "配对成功，已加入可信设备。"
+	return "配对成功，已授权对方 Tailscale IP 访问本机全端口。"
 }

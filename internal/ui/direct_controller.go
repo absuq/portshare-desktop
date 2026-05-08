@@ -157,7 +157,7 @@ func (c *DirectController) pairNormalizedPeer(ctx context.Context, address strin
 		c.state.Message = "配对失败：" + err.Error()
 		return err
 	}
-	successMessage := "已配对：" + displayPeerName(peer.DeviceName, peer.DeviceID)
+	successMessage := "已配对并授权全端口访问：" + displayPeerName(peer.DeviceName, peer.DeviceID)
 	c.state.Message = successMessage
 	if err := c.Refresh(ctx); err != nil {
 		c.state.Message = successMessage + "；状态刷新失败：" + err.Error()

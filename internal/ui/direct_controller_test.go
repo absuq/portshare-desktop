@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	directmanager "github.com/absuq/portshare-desktop/internal/direct/manager"
 	"github.com/absuq/portshare-desktop/internal/direct/store"
@@ -219,7 +220,7 @@ func TestDirectControllerPairPeerSucceedsWhenRefreshFails(t *testing.T) {
 	}
 }
 
-func TestDirectControllerPairPeerKeepsSuccessMessageAfterRefresh(t *testing.T) {
+func TestDirectControllerPairPeerKeepsAuthorizedSuccessMessageAfterRefresh(t *testing.T) {
 	mgr := &fakeDirectManager{ready: directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104"}}
 	ctrl := NewDirectController(mgr)
 
@@ -227,8 +228,8 @@ func TestDirectControllerPairPeerKeepsSuccessMessageAfterRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !strings.Contains(ctrl.State().Message, "已配对：desktop-b") {
-		t.Fatalf("expected pairing success message to remain visible, got %q", ctrl.State().Message)
+	if !strings.Contains(ctrl.State().Message, "已配对并授权全端口访问：desktop-b") {
+		t.Fatalf("expected authorized pairing success message to remain visible, got %q", ctrl.State().Message)
 	}
 }
 
@@ -353,16 +354,26 @@ func TestGeneratePairingSecretReturnsShareableSecret(t *testing.T) {
 }
 
 func TestPairSuccessDialogMessageUsesPairedState(t *testing.T) {
-	state := DirectState{Message: "已配对：desktop-b"}
-	if got := pairSuccessDialogMessage(state); got != "已配对：desktop-b" {
+	state := DirectState{Message: "已配对并授权全端口访问：desktop-b"}
+	if got := pairSuccessDialogMessage(state); got != "已配对并授权全端口访问：desktop-b" {
 		t.Fatalf("expected paired state message, got %q", got)
 	}
 }
 
 func TestPairSuccessDialogMessageFallsBack(t *testing.T) {
 	state := DirectState{Message: "Tailscale 已就绪"}
-	if got := pairSuccessDialogMessage(state); got != "配对成功，已加入可信设备。" {
+	if got := pairSuccessDialogMessage(state); got != "配对成功，已授权对方 Tailscale IP 访问本机全端口。" {
 		t.Fatalf("expected fallback success message, got %q", got)
+	}
+}
+
+func TestPeerDisplayMetaShowsFullAccessAuthorization(t *testing.T) {
+	peer := directmanager.TrustedPeer{
+		TailscaleIP:        "100.109.251.97",
+		AccessAuthorizedAt: time.Now().UTC(),
+	}
+	if got := peerDisplayMeta(peer); !strings.Contains(got, "已授权全端口") {
+		t.Fatalf("expected full access authorization in peer meta, got %q", got)
 	}
 }
 

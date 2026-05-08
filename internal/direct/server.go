@@ -13,9 +13,10 @@ import (
 var ErrAuthFailed = errors.New("authentication failed")
 
 type ServerConfig struct {
-	DeviceID   string
-	DeviceName string
-	Secret     string
+	DeviceID        string
+	DeviceName      string
+	Secret          string
+	OnAuthenticated func(PairedPeer)
 }
 
 type Server struct {
@@ -146,12 +147,21 @@ func (s *Server) handle(conn net.Conn) {
 		return
 	}
 
-	_ = protocol.WriteFrame(conn, protocol.ControlMessage{
+	if err := protocol.WriteFrame(conn, protocol.ControlMessage{
 		Type:       protocol.TypeAuthOK,
 		Version:    protocol.Version,
 		DeviceID:   s.config.DeviceID,
 		DeviceName: s.config.DeviceName,
-	})
+	}); err != nil {
+		return
+	}
+	if s.config.OnAuthenticated != nil {
+		s.config.OnAuthenticated(PairedPeer{
+			DeviceID:   hello.DeviceID,
+			DeviceName: hello.DeviceName,
+			Address:    conn.RemoteAddr().String(),
+		})
+	}
 }
 
 func writeAuthFailure(conn net.Conn) error {

@@ -11,12 +11,13 @@ import (
 )
 
 type TrustedPeer struct {
-	ID            string    `json:"id"`
-	DisplayName   string    `json:"display_name"`
-	TailscaleIP   string    `json:"tailscale_ip"`
-	FirstPairedAt time.Time `json:"first_paired_at"`
-	LastSeenAt    time.Time `json:"last_seen_at"`
-	LastRoute     string    `json:"last_route"`
+	ID                 string    `json:"id"`
+	DisplayName        string    `json:"display_name"`
+	TailscaleIP        string    `json:"tailscale_ip"`
+	FirstPairedAt      time.Time `json:"first_paired_at"`
+	LastSeenAt         time.Time `json:"last_seen_at"`
+	AccessAuthorizedAt time.Time `json:"access_authorized_at,omitempty"`
+	LastRoute          string    `json:"last_route"`
 	// SecretLabel is for display/matching only; it is not a secret and cannot authenticate peers.
 	SecretLabel string `json:"secret_label"`
 }

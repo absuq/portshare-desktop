@@ -43,6 +43,25 @@ func (f *fakePairClient) Pair(ctx context.Context, address string) (direct.Paire
 	return direct.PairedPeer{DeviceID: "device-b", DeviceName: "desktop-b", Address: address}, nil
 }
 
+type fakeAccessAuthorizer struct {
+	mu    sync.Mutex
+	calls []TrustedPeerAccess
+	err   error
+}
+
+func (f *fakeAccessAuthorizer) AllowTrustedPeer(_ context.Context, access TrustedPeerAccess) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, access)
+	return f.err
+}
+
+func (f *fakeAccessAuthorizer) Calls() []TrustedPeerAccess {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]TrustedPeerAccess(nil), f.calls...)
+}
+
 type MemoryPeerStore struct {
 	mu    sync.Mutex
 	peers []store.TrustedPeer
@@ -175,6 +194,77 @@ func TestPairPeerStoresTrustedPeer(t *testing.T) {
 	}
 	if stored.FirstPairedAt.IsZero() || stored.LastSeenAt.IsZero() {
 		t.Fatalf("expected pairing timestamps, got %+v", stored)
+	}
+}
+
+func TestPairPeerAuthorizesTrustedPeerAccess(t *testing.T) {
+	mem := NewMemoryPeerStore()
+	authorizer := &fakeAccessAuthorizer{}
+	m := New(Config{
+		Tailscale: fakeTailscale{report: tailscale.ReadyReport{
+			Ready:  true,
+			Code:   tailscale.CodeOK,
+			Status: tailscale.Status{LocalIPv4: "100.79.83.104"},
+		}},
+		PairClient: &fakePairClient{peers: map[string]direct.PairedPeer{
+			"100.109.251.97:17890": {DeviceID: "device-b", DeviceName: "desktop-b"},
+		}},
+		PeerStore:        mem,
+		AccessAuthorizer: authorizer,
+	})
+
+	if _, err := m.PairPeer(context.Background(), "100.109.251.97:17890"); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := authorizer.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("expected one firewall authorization, got %+v", calls)
+	}
+	if calls[0].LocalTailscaleIP != "100.79.83.104" || calls[0].PeerTailscaleIP != "100.109.251.97" {
+		t.Fatalf("unexpected access request: %+v", calls[0])
+	}
+	peers := mem.Peers()
+	if len(peers) != 1 || peers[0].AccessAuthorizedAt.IsZero() {
+		t.Fatalf("expected stored peer to record access authorization, got %+v", peers)
+	}
+}
+
+func TestAuthenticatedIncomingPeerIsStoredAndAuthorized(t *testing.T) {
+	mem := NewMemoryPeerStore()
+	authorizer := &fakeAccessAuthorizer{}
+	m := New(Config{
+		PeerStore:        mem,
+		AccessAuthorizer: authorizer,
+		DeviceID:         "device-b",
+		DeviceName:       "desktop-b",
+	})
+	if err := m.StartControlServer(context.Background(), "127.0.0.1:0", "shared"); err != nil {
+		t.Fatal(err)
+	}
+	defer m.StopControlServer(context.Background())
+
+	client := direct.NewClient(direct.ClientConfig{DeviceID: "device-a", DeviceName: "desktop-a", Secret: "shared"})
+	if _, err := client.Pair(context.Background(), m.ControlAddress()); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if len(mem.Peers()) == 1 && len(authorizer.Calls()) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected incoming peer to be stored and authorized, peers=%+v calls=%+v", mem.Peers(), authorizer.Calls())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	peer := mem.Peers()[0]
+	if peer.ID != "device-a" || peer.DisplayName != "desktop-a" || peer.TailscaleIP != "127.0.0.1" {
+		t.Fatalf("unexpected incoming trusted peer: %+v", peer)
+	}
+	if peer.AccessAuthorizedAt.IsZero() {
+		t.Fatalf("expected incoming peer authorization timestamp, got %+v", peer)
 	}
 }
 

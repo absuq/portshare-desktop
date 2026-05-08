@@ -19,21 +19,23 @@ type Tailscale interface {
 }
 
 type Config struct {
-	Tailscale   Tailscale
-	PairClient  PairClient
-	PeerStore   PeerStore
-	SecretLabel string
-	DeviceID    string
-	DeviceName  string
+	Tailscale        Tailscale
+	PairClient       PairClient
+	PeerStore        PeerStore
+	AccessAuthorizer AccessAuthorizer
+	SecretLabel      string
+	DeviceID         string
+	DeviceName       string
 }
 
 type Manager struct {
-	tailscale   Tailscale
-	pairClient  PairClient
-	peerStore   PeerStore
-	secretLabel string
-	deviceID    string
-	deviceName  string
+	tailscale        Tailscale
+	pairClient       PairClient
+	peerStore        PeerStore
+	accessAuthorizer AccessAuthorizer
+	secretLabel      string
+	deviceID         string
+	deviceName       string
 
 	authMu          sync.RWMutex
 	controlMu       sync.Mutex
@@ -46,6 +48,18 @@ type PairedPeer = direct.PairedPeer
 
 type PairClient interface {
 	Pair(context.Context, string) (direct.PairedPeer, error)
+}
+
+type AccessAuthorizer interface {
+	AllowTrustedPeer(context.Context, TrustedPeerAccess) error
+}
+
+type TrustedPeerAccess struct {
+	RulePrefix       string
+	LocalTailscaleIP string
+	PeerTailscaleIP  string
+	PeerID           string
+	PeerName         string
 }
 
 type PeerStore interface {
@@ -64,12 +78,13 @@ type ReadyState struct {
 
 func New(config Config) *Manager {
 	return &Manager{
-		tailscale:   config.Tailscale,
-		pairClient:  config.PairClient,
-		peerStore:   config.PeerStore,
-		secretLabel: config.SecretLabel,
-		deviceID:    config.DeviceID,
-		deviceName:  config.DeviceName,
+		tailscale:        config.Tailscale,
+		pairClient:       config.PairClient,
+		peerStore:        config.PeerStore,
+		accessAuthorizer: config.AccessAuthorizer,
+		secretLabel:      config.SecretLabel,
+		deviceID:         config.DeviceID,
+		deviceName:       config.DeviceName,
 	}
 }
 
@@ -129,6 +144,9 @@ func (m *Manager) StartControlServer(ctx context.Context, listenAddress string, 
 		DeviceID:   m.deviceID,
 		DeviceName: m.deviceName,
 		Secret:     secret,
+		OnAuthenticated: func(peer direct.PairedPeer) {
+			_ = m.TrustAuthenticatedPeer(context.Background(), peer)
+		},
 	})
 	client := direct.NewClient(direct.ClientConfig{
 		DeviceID:   m.deviceID,
@@ -215,17 +233,46 @@ func (m *Manager) PairPeer(ctx context.Context, address string) (PairedPeer, err
 	m.peerMu.Lock()
 	defer m.peerMu.Unlock()
 
+	trusted, err := m.buildAndAuthorizeTrustedPeer(ctx, peer, address, secretLabel)
+	if err != nil {
+		return PairedPeer{}, err
+	}
+
 	peers, err := m.peerStore.LoadPeers()
 	if err != nil {
 		return PairedPeer{}, err
 	}
 
-	peers = upsertTrustedPeer(peers, trustedPeerFromPair(peer, address, secretLabel))
+	peers = upsertTrustedPeer(peers, trusted)
 
 	if err := m.peerStore.SavePeers(peers); err != nil {
 		return PairedPeer{}, err
 	}
 	return peer, nil
+}
+
+func (m *Manager) TrustAuthenticatedPeer(ctx context.Context, peer direct.PairedPeer) error {
+	if m.peerStore == nil {
+		return errors.New("peer store is not configured")
+	}
+
+	m.authMu.RLock()
+	secretLabel := m.secretLabel
+	m.authMu.RUnlock()
+
+	m.peerMu.Lock()
+	defer m.peerMu.Unlock()
+
+	trusted, err := m.buildAndAuthorizeTrustedPeer(ctx, peer, peer.Address, secretLabel)
+	if err != nil {
+		return err
+	}
+	peers, err := m.peerStore.LoadPeers()
+	if err != nil {
+		return err
+	}
+	peers = upsertTrustedPeer(peers, trusted)
+	return m.peerStore.SavePeers(peers)
 }
 
 func (m *Manager) TrustedPeers(ctx context.Context) ([]TrustedPeer, error) {
@@ -238,8 +285,36 @@ func (m *Manager) TrustedPeers(ctx context.Context) ([]TrustedPeer, error) {
 	return m.peerStore.LoadPeers()
 }
 
+func (m *Manager) buildAndAuthorizeTrustedPeer(ctx context.Context, peer direct.PairedPeer, address string, secretLabel string) (store.TrustedPeer, error) {
+	trusted := trustedPeerFromPair(peer, address, secretLabel)
+	if m.accessAuthorizer == nil {
+		return trusted, nil
+	}
+	if err := m.accessAuthorizer.AllowTrustedPeer(ctx, TrustedPeerAccess{
+		RulePrefix:       "portshare",
+		LocalTailscaleIP: m.localTailscaleIP(ctx),
+		PeerTailscaleIP:  trusted.TailscaleIP,
+		PeerID:           trusted.ID,
+		PeerName:         trusted.DisplayName,
+	}); err != nil {
+		return store.TrustedPeer{}, err
+	}
+	trusted.AccessAuthorizedAt = time.Now().UTC()
+	return trusted, nil
+}
+
+func (m *Manager) localTailscaleIP(ctx context.Context) string {
+	if host := hostFromAddress(m.ControlAddress()); host != "" {
+		return host
+	}
+	if m.tailscale == nil {
+		return ""
+	}
+	return m.Ready(ctx).LocalTailscaleIP
+}
+
 func trustedPeerFromPair(peer direct.PairedPeer, address string, secretLabel string) store.TrustedPeer {
-	now := time.Now()
+	now := time.Now().UTC()
 	if peer.Address == "" {
 		peer.Address = address
 	}
@@ -266,6 +341,9 @@ func upsertTrustedPeer(peers []store.TrustedPeer, trusted store.TrustedPeer) []s
 		}
 		if trusted.LastRoute == "" {
 			trusted.LastRoute = peers[i].LastRoute
+		}
+		if trusted.AccessAuthorizedAt.IsZero() {
+			trusted.AccessAuthorizedAt = peers[i].AccessAuthorizedAt
 		}
 		peers[i] = trusted
 		return peers

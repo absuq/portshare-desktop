@@ -9,6 +9,7 @@ import (
 	"github.com/absuq/portshare-desktop/internal/config"
 	directmanager "github.com/absuq/portshare-desktop/internal/direct/manager"
 	directstore "github.com/absuq/portshare-desktop/internal/direct/store"
+	"github.com/absuq/portshare-desktop/internal/firewall"
 	tailscalediag "github.com/absuq/portshare-desktop/internal/tailscale"
 	"github.com/absuq/portshare-desktop/internal/ui"
 )
@@ -35,10 +36,11 @@ func main() {
 		peersPath = filepath.Join(filepath.Dir(cfgPath), "direct-peers.json")
 	}
 	directMgr := directmanager.New(directmanager.Config{
-		Tailscale:  tailscalediag.NewClient(nil),
-		PeerStore:  directstore.New(peersPath),
-		DeviceID:   deviceName,
-		DeviceName: deviceName,
+		Tailscale:        tailscalediag.NewClient(nil),
+		PeerStore:        directstore.New(peersPath),
+		AccessAuthorizer: managerFirewallAuthorizer{inner: firewall.NewAuthorizer(nil)},
+		DeviceID:         deviceName,
+		DeviceName:       deviceName,
 	})
 	ui.New(ui.Dependencies{
 		DirectManager: directMgr,
