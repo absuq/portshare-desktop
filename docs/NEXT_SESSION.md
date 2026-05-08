@@ -38,10 +38,11 @@ $env:PATH = (Join-Path (Get-Location) '.superpowers\tools\w64devkit-1.23.0\w64de
 $env:CGO_ENABLED = '1'
 & '.\.superpowers\tools\go1.26.2\go\bin\go.exe' test ./...
 & '.\.superpowers\tools\go1.26.2\go\bin\go.exe' vet ./...
-& '.\.superpowers\tools\go1.26.2\go\bin\go.exe' build -o .superpowers\tmp\portshare-direct.exe ./cmd/portshare
+.\scripts\build-windows.ps1
 ```
 
 不要使用 `.superpowers/tools/w64devkit-2.7.0/` 作为当前 CGO 编译器。
+Windows 桌面版必须通过 `scripts\build-windows.ps1` 构建；脚本会加 `-ldflags='-H windowsgui'`，避免双击运行时弹出终端窗口。
 
 ## 下一步
 

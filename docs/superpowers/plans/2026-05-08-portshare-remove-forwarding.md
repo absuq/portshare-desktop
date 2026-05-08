@@ -56,3 +56,5 @@
 - [x] 明确说明关闭 portshare 不会关闭 Tailscale 自身连通性。
 - [x] 运行 `go test ./...`、`go vet ./...`。
 - [x] 构建 `.superpowers/tmp/portshare-direct.exe`。
+
+后续 Windows 桌面版应使用 `scripts/build-windows.ps1` 构建。该脚本会设置 GUI 子系统，避免双击启动时弹出终端窗口。

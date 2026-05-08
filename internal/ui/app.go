@@ -25,6 +25,7 @@ type App struct {
 
 func New(deps Dependencies) *App {
 	a := app.NewWithID("com.absuq.portshare")
+	a.SetIcon(portshareIconResource())
 	return &App{
 		fyneApp:    a,
 		deps:       deps,
