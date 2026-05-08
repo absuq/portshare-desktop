@@ -62,6 +62,7 @@ type LocalhostBridge interface {
 	SetAllowedPeers([]string)
 	Refresh(context.Context) error
 	ActivePorts() []int
+	ConflictPorts() []int
 	Close() error
 }
 
@@ -320,6 +321,13 @@ func (m *Manager) LocalhostBridgePorts() []int {
 		return nil
 	}
 	return m.localhostBridge.ActivePorts()
+}
+
+func (m *Manager) LocalhostBridgeConflictPorts() []int {
+	if m.localhostBridge == nil {
+		return nil
+	}
+	return m.localhostBridge.ConflictPorts()
 }
 
 func (m *Manager) startLocalhostBridgePolling(ctx context.Context, localIP string) {

@@ -69,6 +69,10 @@ func (f *fakeDirectManager) LocalhostBridgePorts() []int {
 	return []int{18789, 3000}
 }
 
+func (f *fakeDirectManager) LocalhostBridgeConflictPorts() []int {
+	return []int{3000}
+}
+
 func TestDirectControllerRefreshShowsReadyState(t *testing.T) {
 	mgr := &fakeDirectManager{ready: directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104", Code: tailscale.CodeOK}}
 	ctrl := NewDirectController(mgr)
@@ -86,6 +90,9 @@ func TestDirectControllerRefreshShowsReadyState(t *testing.T) {
 	}
 	if len(state.LocalhostBridgePorts) != 2 || state.LocalhostBridgePorts[0] != 18789 {
 		t.Fatalf("expected localhost bridge ports in state, got %+v", state.LocalhostBridgePorts)
+	}
+	if len(state.LocalhostBridgeConflictPorts) != 1 || state.LocalhostBridgeConflictPorts[0] != 3000 {
+		t.Fatalf("expected localhost bridge conflict ports in state, got %+v", state.LocalhostBridgeConflictPorts)
 	}
 }
 
@@ -394,6 +401,19 @@ func TestLocalhostBridgeStatusTextShowsActivePorts(t *testing.T) {
 func TestLocalhostBridgeStatusTextShowsNone(t *testing.T) {
 	if got := localhostBridgeStatusText(DirectState{}); got != "localhost 桥接：无" {
 		t.Fatalf("unexpected localhost bridge status: %q", got)
+	}
+}
+
+func TestLocalhostBridgeConflictStatusTextShowsConflictPorts(t *testing.T) {
+	state := DirectState{LocalhostBridgeConflictPorts: []int{3000}}
+	if got := localhostBridgeConflictStatusText(state); got != "localhost 冲突：3000 原生监听，未桥接" {
+		t.Fatalf("unexpected localhost bridge conflict status: %q", got)
+	}
+}
+
+func TestLocalhostBridgeConflictStatusTextShowsNone(t *testing.T) {
+	if got := localhostBridgeConflictStatusText(DirectState{}); got != "localhost 冲突：无" {
+		t.Fatalf("unexpected localhost bridge conflict status: %q", got)
 	}
 }
 

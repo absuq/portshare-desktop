@@ -25,11 +25,24 @@ type BridgePlan struct {
 	AllowedPeerIPs []string
 }
 
+type Conflict struct {
+	Port int
+}
+
+type PlanResult struct {
+	Bridges   []BridgePlan
+	Conflicts []Conflict
+}
+
 func BuildPlan(input PlanInput) []BridgePlan {
+	return BuildPlanResult(input).Bridges
+}
+
+func BuildPlanResult(input PlanInput) PlanResult {
 	localIP := strings.TrimSpace(input.LocalTailscaleIP)
 	allowed := normalizeAllowedPeerIPs(input.AllowedPeerIPs)
 	if localIP == "" || len(allowed) == 0 {
-		return nil
+		return PlanResult{}
 	}
 
 	byPort := map[int][]string{}
@@ -50,20 +63,25 @@ func BuildPlan(input PlanInput) []BridgePlan {
 	}
 	sort.Ints(ports)
 
-	var plans []BridgePlan
+	var result PlanResult
 	for _, port := range ports {
 		addresses := byPort[port]
-		if !hasLoopbackListener(addresses) || hasNativeReachableListener(addresses, localIP) {
+		hasLoopback := hasLoopbackListener(addresses)
+		hasNative := hasNativeReachableListener(addresses, localIP)
+		if hasLoopback && hasNative {
+			result.Conflicts = append(result.Conflicts, Conflict{Port: port})
+		}
+		if !hasLoopback || hasNative {
 			continue
 		}
-		plans = append(plans, BridgePlan{
+		result.Bridges = append(result.Bridges, BridgePlan{
 			Port:           port,
 			ListenAddress:  net.JoinHostPort(localIP, fmt.Sprintf("%d", port)),
 			TargetAddress:  net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port)),
 			AllowedPeerIPs: append([]string(nil), allowed...),
 		})
 	}
-	return plans
+	return result
 }
 
 func normalizeAllowedPeerIPs(values []string) []string {

@@ -90,6 +90,29 @@
 
 5. 确认 `TcpTestSucceeded` 为 `True`，并且 HTTP 请求能返回电脑 B 上的本地服务内容。
 
+## localhost 冲突提示验证
+
+如果同一个端口同时存在 loopback 监听和原生可达监听，例如：
+
+```text
+127.0.0.1:3000 LISTENING
+0.0.0.0:3000 LISTENING
+```
+
+`portshare` 不会创建 `100.x.x.x:3000 -> 127.0.0.1:3000` 桥接，因为 `100.x.x.x:3000` 已经会命中原生监听。UI 应显示：
+
+```text
+localhost 冲突：3000 原生监听，未桥接
+```
+
+此时远端访问：
+
+```text
+<computer-b-tailscale-ip>:3000
+```
+
+访问的是原生 `0.0.0.0:3000` 服务，不是 `127.0.0.1:3000` 服务。
+
 ## 关闭验证
 
 1. 在电脑 B 退出 `portshare`。
@@ -109,6 +132,7 @@
 - 当前 MVP 不提供手动业务端口转发。
 - 当前 MVP 会自动桥接只监听 `127.0.0.1` 的 TCP 服务，让可信设备通过本机 Tailscale IP 同端口访问。
 - 当前 MVP 不桥接 UDP localhost 服务。
+- 如果同端口已有 `0.0.0.0` 或 Tailscale IP 原生监听，localhost 同端口不会桥接，UI 会显示冲突提示。
 - 配对成功后会为对方 Tailscale IP 写入本机 TCP/UDP 全端口入站允许规则。
 - 关闭 `portshare` 只会停止 `portshare` 自己的控制监听，不会关闭 Tailscale。
 - 没有服务监听的端口仍然不会连通。

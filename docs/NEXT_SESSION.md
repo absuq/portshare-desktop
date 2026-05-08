@@ -25,6 +25,8 @@
 
 方案 A 已确认并实现：`portshare` 会自动扫描本机 TCP 监听。如果服务只监听 `127.0.0.1:<port>`，会自动创建 `<本机 Tailscale IP>:<port> -> 127.0.0.1:<port>` 的 localhost 桥接，并只允许可信设备 IP 连接。扫描周期为 5 秒。
 
+如果同一个端口已经有 `0.0.0.0:<port>` 或 `<本机 Tailscale IP>:<port>` 原生监听，`portshare` 不会桥接同端口的 `127.0.0.1:<port>`，UI 会显示 `localhost 冲突：<port> 原生监听，未桥接`。
+
 ## 已完成
 
 - 可见产品名统一为 `portshare`。
@@ -39,6 +41,7 @@
 - 发起方配对成功后授权对方 Tailscale IP 访问本机。
 - 响应方认证成功后保存并授权发起方 Tailscale IP。
 - 新增自动 localhost TCP 桥接：loopback-only 服务可通过 Tailscale IP 同端口访问。
+- 新增 localhost 冲突提示：同端口已有原生监听时提示未桥接。
 - 手动验收文档已切换为双机配对验收步骤。
 
 ## 本地验证命令

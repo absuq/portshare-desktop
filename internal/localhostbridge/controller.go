@@ -30,6 +30,7 @@ type Controller struct {
 	allowedPeerIPs   []string
 	newBridge        func(BridgePlan) BridgeRunner
 	active           map[int]activeBridge
+	conflicts        []int
 }
 
 type activeBridge struct {
@@ -77,18 +78,20 @@ func (c *Controller) Refresh(ctx context.Context) error {
 	allowed := append([]string(nil), c.allowedPeerIPs...)
 	c.mu.Unlock()
 
-	plans := BuildPlan(PlanInput{
+	result := BuildPlanResult(PlanInput{
 		LocalTailscaleIP: localIP,
 		AllowedPeerIPs:   allowed,
 		Listeners:        listeners,
 	})
-	desired := make(map[int]BridgePlan, len(plans))
-	for _, plan := range plans {
+	desired := make(map[int]BridgePlan, len(result.Bridges))
+	for _, plan := range result.Bridges {
 		desired[plan.Port] = plan
 	}
+	conflicts := conflictPorts(result.Conflicts)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.conflicts = conflicts
 
 	for port, active := range c.active {
 		plan, ok := desired[port]
@@ -121,6 +124,12 @@ func (c *Controller) ActivePorts() []int {
 	return ports
 }
 
+func (c *Controller) ConflictPorts() []int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]int(nil), c.conflicts...)
+}
+
 func (c *Controller) Close() error {
 	if c == nil {
 		return nil
@@ -128,11 +137,21 @@ func (c *Controller) Close() error {
 	c.mu.Lock()
 	active := c.active
 	c.active = make(map[int]activeBridge)
+	c.conflicts = nil
 	c.mu.Unlock()
 	for _, bridge := range active {
 		_ = bridge.bridge.Close()
 	}
 	return nil
+}
+
+func conflictPorts(conflicts []Conflict) []int {
+	ports := make([]int, 0, len(conflicts))
+	for _, conflict := range conflicts {
+		ports = append(ports, conflict.Port)
+	}
+	sort.Ints(ports)
+	return ports
 }
 
 func bridgePlansEqual(a, b BridgePlan) bool {

@@ -32,8 +32,9 @@ func (a *App) buildMainWindow() fyne.Window {
 	ipLabel := widget.NewLabel("本机 IP：-")
 	controlLabel := widget.NewLabel("portshare：未启用")
 	bridgeLabel := widget.NewLabel("localhost 桥接：无")
+	bridgeConflictLabel := widget.NewLabel("localhost 冲突：无")
 	messageLabel := widget.NewLabel("准备就绪")
-	for _, label := range []*widget.Label{statusLabel, ipLabel, controlLabel, bridgeLabel, messageLabel} {
+	for _, label := range []*widget.Label{statusLabel, ipLabel, controlLabel, bridgeLabel, bridgeConflictLabel, messageLabel} {
 		label.Wrapping = fyne.TextWrapWord
 	}
 
@@ -150,6 +151,7 @@ func (a *App) buildMainWindow() fyne.Window {
 			controlLabel.SetText("portshare：未启用")
 		}
 		bridgeLabel.SetText(localhostBridgeStatusText(state))
+		bridgeConflictLabel.SetText(localhostBridgeConflictStatusText(state))
 		if state.Message != "" {
 			messageLabel.SetText(state.Message)
 		}
@@ -163,7 +165,7 @@ func (a *App) buildMainWindow() fyne.Window {
 	}
 	a.refreshUI = render
 
-	statusBand := container.NewVBox(statusLabel, ipLabel, controlLabel, bridgeLabel, messageLabel)
+	statusBand := container.NewVBox(statusLabel, ipLabel, controlLabel, bridgeLabel, bridgeConflictLabel, messageLabel)
 	setupPanel := container.NewVBox(
 		widget.NewLabel("直连密钥"),
 		secretEntry,
@@ -260,4 +262,17 @@ func localhostBridgeStatusText(state DirectState) string {
 		parts = append(parts, strconv.Itoa(port))
 	}
 	return "localhost 桥接：" + strings.Join(parts, ", ")
+}
+
+func localhostBridgeConflictStatusText(state DirectState) string {
+	if len(state.LocalhostBridgeConflictPorts) == 0 {
+		return "localhost 冲突：无"
+	}
+	ports := append([]int(nil), state.LocalhostBridgeConflictPorts...)
+	sort.Ints(ports)
+	parts := make([]string, 0, len(ports))
+	for _, port := range ports {
+		parts = append(parts, strconv.Itoa(port))
+	}
+	return "localhost 冲突：" + strings.Join(parts, ", ") + " 原生监听，未桥接"
 }

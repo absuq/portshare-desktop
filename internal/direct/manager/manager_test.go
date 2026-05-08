@@ -104,6 +104,10 @@ func (b *fakeLocalhostBridge) ActivePorts() []int {
 	return append([]int(nil), b.active...)
 }
 
+func (b *fakeLocalhostBridge) ConflictPorts() []int {
+	return []int{3000}
+}
+
 func (b *fakeLocalhostBridge) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()

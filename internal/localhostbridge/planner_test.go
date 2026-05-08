@@ -37,6 +37,24 @@ func TestBuildPlanDoesNotBridgeWildcardListener(t *testing.T) {
 	}
 }
 
+func TestBuildPlanResultReportsWildcardConflict(t *testing.T) {
+	result := BuildPlanResult(PlanInput{
+		LocalTailscaleIP: "100.79.83.104",
+		AllowedPeerIPs:   []string{"100.109.251.97"},
+		Listeners: []ListeningPort{
+			{Address: "127.0.0.1", Port: 3000},
+			{Address: "0.0.0.0", Port: 3000},
+		},
+	})
+
+	if len(result.Bridges) != 0 {
+		t.Fatalf("expected no bridge for native reachable port, got %+v", result.Bridges)
+	}
+	if len(result.Conflicts) != 1 || result.Conflicts[0].Port != 3000 {
+		t.Fatalf("expected conflict on port 3000, got %+v", result.Conflicts)
+	}
+}
+
 func TestBuildPlanDoesNotBridgeNativeTailscaleListener(t *testing.T) {
 	plans := BuildPlan(PlanInput{
 		LocalTailscaleIP: "100.79.83.104",

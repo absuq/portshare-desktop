@@ -121,3 +121,23 @@ func TestControllerSetAllowedPeersRefreshesExistingBridgePlan(t *testing.T) {
 		t.Fatalf("unexpected refreshed allowed peers: %+v", created[1].plan.AllowedPeerIPs)
 	}
 }
+
+func TestControllerReportsNativeReachableConflictPorts(t *testing.T) {
+	scanner := &fakeScanner{listeners: []ListeningPort{
+		{Address: "127.0.0.1", Port: 3000},
+		{Address: "0.0.0.0", Port: 3000},
+	}}
+	controller := NewController(Config{
+		Scanner:          scanner,
+		LocalTailscaleIP: "100.79.83.104",
+		AllowedPeerIPs:   []string{"100.109.251.97"},
+	})
+
+	if err := controller.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(controller.ConflictPorts(), []int{3000}) {
+		t.Fatalf("unexpected conflict ports: %+v", controller.ConflictPorts())
+	}
+}
