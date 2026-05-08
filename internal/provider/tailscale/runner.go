@@ -2,7 +2,8 @@ package tailscale
 
 import (
 	"context"
-	"os/exec"
+
+	"github.com/absuq/portshare-desktop/internal/winexec"
 )
 
 type Runner interface {
@@ -12,6 +13,6 @@ type Runner interface {
 type ExecRunner struct{}
 
 func (ExecRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := winexec.NewCommand(ctx, name, args...)
 	return cmd.CombinedOutput()
 }

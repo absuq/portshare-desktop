@@ -4,7 +4,8 @@ package firewall
 
 import (
 	"context"
-	"os/exec"
+
+	"github.com/absuq/portshare-desktop/internal/winexec"
 )
 
 type execRunner struct{}
@@ -14,5 +15,5 @@ func newDefaultRunner() CommandRunner {
 }
 
 func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	return winexec.NewCommand(ctx, name, args...).CombinedOutput()
 }
