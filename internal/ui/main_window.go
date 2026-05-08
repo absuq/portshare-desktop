@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net"
@@ -131,7 +132,38 @@ func (a *App) buildMainWindow() fyne.Window {
 	})
 	pairButton := widget.NewButton("配对设备", func() {
 		withTimeout(func(ctx context.Context) error {
-			return a.directCtrl.PairPeer(ctx, peerEntry.Text)
+			if _, err := normalizePeerControlAddress(peerEntry.Text); err != nil {
+				return err
+			}
+			if strings.TrimSpace(secretEntry.Text) == "" {
+				secret, err := generatePairingSecret()
+				if err != nil {
+					return err
+				}
+				secretEntry.SetText(secret)
+				dialog.ShowInformation(
+					"配对密钥",
+					"已生成配对密钥：\n\n"+secret+"\n\n请让对方也输入这个密钥并点击“启用直连密钥”，然后再次点击“配对设备”。",
+					w,
+				)
+				return nil
+			}
+			current := a.directCtrl.State()
+			if current.LocalTailscaleIP == "" {
+				if err := a.directCtrl.Refresh(ctx); err != nil {
+					return err
+				}
+				current = a.directCtrl.State()
+			}
+			if current.LocalTailscaleIP == "" {
+				return errors.New("请先检测 Tailscale，确认本机 IP 后再配对")
+			}
+			return a.directCtrl.PairPeerWithSecret(
+				ctx,
+				peerEntry.Text,
+				secretEntry.Text,
+				net.JoinHostPort(current.LocalTailscaleIP, defaultDirectControlPort),
+			)
 		})
 	})
 
@@ -259,6 +291,25 @@ func localListenAddress(portText string) (string, error) {
 		return "", errors.New("本地端口必须在 1-65535 之间")
 	}
 	return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), nil
+}
+
+const pairingSecretAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+func generatePairingSecret() (string, error) {
+	randomBytes := make([]byte, 20)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "", fmt.Errorf("生成配对密钥失败：%w", err)
+	}
+
+	var builder strings.Builder
+	builder.Grow(24)
+	for i, value := range randomBytes {
+		if i > 0 && i%4 == 0 {
+			builder.WriteByte('-')
+		}
+		builder.WriteByte(pairingSecretAlphabet[int(value)%len(pairingSecretAlphabet)])
+	}
+	return builder.String(), nil
 }
 
 func peerDisplayName(peer directmanager.TrustedPeer) string {

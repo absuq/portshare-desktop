@@ -123,6 +123,25 @@ func (c *DirectController) PairPeer(ctx context.Context, peerAddress string) err
 		c.state.Message = "对方 Tailscale 地址无效：" + err.Error()
 		return err
 	}
+	return c.pairNormalizedPeer(ctx, address)
+}
+
+func (c *DirectController) PairPeerWithSecret(ctx context.Context, peerAddress string, secret string, listenAddress string) error {
+	if err := c.requireManager(); err != nil {
+		return err
+	}
+	address, err := normalizePeerControlAddress(peerAddress)
+	if err != nil {
+		c.state.Message = "对方 Tailscale 地址无效：" + err.Error()
+		return err
+	}
+	if err := c.StartDirectMode(ctx, secret, listenAddress); err != nil {
+		return err
+	}
+	return c.pairNormalizedPeer(ctx, address)
+}
+
+func (c *DirectController) pairNormalizedPeer(ctx context.Context, address string) error {
 	peer, err := c.manager.PairPeer(ctx, address)
 	if err != nil {
 		c.state.Message = "配对失败：" + err.Error()

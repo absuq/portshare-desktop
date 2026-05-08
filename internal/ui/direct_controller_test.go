@@ -259,6 +259,38 @@ func TestDirectControllerPairPeerSucceedsWhenRefreshFails(t *testing.T) {
 	}
 }
 
+func TestDirectControllerPairPeerWithSecretStartsControlServerBeforePairing(t *testing.T) {
+	mgr := &fakeDirectManager{}
+	ctrl := NewDirectController(mgr)
+
+	if err := ctrl.PairPeerWithSecret(context.Background(), "100.109.251.97", "shared-secret", "100.79.83.104:17890"); err != nil {
+		t.Fatal(err)
+	}
+
+	if !mgr.started {
+		t.Fatal("expected direct mode to be started before pairing")
+	}
+	if mgr.startListenAddress != "100.79.83.104:17890" || mgr.startSecret != "shared-secret" {
+		t.Fatalf("unexpected direct start request: address=%q secret=%q", mgr.startListenAddress, mgr.startSecret)
+	}
+	if mgr.pairAddress != "100.109.251.97:17890" {
+		t.Fatalf("expected pair to use default control port, got %q", mgr.pairAddress)
+	}
+}
+
+func TestDirectControllerPairPeerWithSecretRejectsMissingSecretBeforePairing(t *testing.T) {
+	mgr := &fakeDirectManager{}
+	ctrl := NewDirectController(mgr)
+
+	err := ctrl.PairPeerWithSecret(context.Background(), "100.109.251.97", " ", "100.79.83.104:17890")
+	if !errors.Is(err, ErrDirectSecretRequired) {
+		t.Fatalf("expected ErrDirectSecretRequired, got %v", err)
+	}
+	if mgr.started || mgr.pairAddress != "" {
+		t.Fatalf("expected no start or pair without secret, started=%v pairAddress=%q", mgr.started, mgr.pairAddress)
+	}
+}
+
 func TestDirectControllerStateIsImmutableSnapshot(t *testing.T) {
 	mgr := &fakeDirectManager{
 		peers: []directmanager.TrustedPeer{{ID: "device-b", DisplayName: "desktop-b", TailscaleIP: "100.109.251.97"}},
@@ -336,6 +368,27 @@ func TestLocalListenAddressAcceptsOnlyLocalPort(t *testing.T) {
 	for _, input := range []string{"localhost:18080", ":18080", "abc", "70000", "0"} {
 		if _, err := localListenAddress(input); err == nil {
 			t.Fatalf("expected localListenAddress(%q) to fail", input)
+		}
+	}
+}
+
+func TestGeneratePairingSecretReturnsShareableSecret(t *testing.T) {
+	secret, err := generatePairingSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secret) != 24 {
+		t.Fatalf("expected grouped 20 character secret, got %q", secret)
+	}
+	if secret[4] != '-' || secret[9] != '-' || secret[14] != '-' || secret[19] != '-' {
+		t.Fatalf("expected hyphenated secret, got %q", secret)
+	}
+	for _, r := range secret {
+		if r == '-' {
+			continue
+		}
+		if r < 'A' || r > 'Z' {
+			t.Fatalf("expected uppercase shareable characters, got %q in %q", r, secret)
 		}
 	}
 }
