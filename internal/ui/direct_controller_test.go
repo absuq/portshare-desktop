@@ -40,6 +40,13 @@ func (f *fakeDirectManager) StopControlServer(context.Context) error {
 	return nil
 }
 
+func (f *fakeDirectManager) ControlAddress() string {
+	if !f.started {
+		return ""
+	}
+	return f.startListenAddress
+}
+
 func (f *fakeDirectManager) PairPeer(_ context.Context, address string) (directmanager.PairedPeer, error) {
 	f.pairAddress = address
 	if f.pairErr != nil {
@@ -145,6 +152,40 @@ func TestDirectControllerStartsControlServerWithSecret(t *testing.T) {
 	}
 }
 
+func TestDirectControllerStartDirectModeShowsListeningState(t *testing.T) {
+	mgr := &fakeDirectManager{ready: directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104"}}
+	ctrl := NewDirectController(mgr)
+
+	if err := ctrl.StartDirectMode(context.Background(), "shared-secret", "100.79.83.104:17890"); err != nil {
+		t.Fatal(err)
+	}
+
+	state := ctrl.State()
+	if !state.ControlListening || state.ControlAddress != "100.79.83.104:17890" {
+		t.Fatalf("expected listening state, got listening=%v address=%q", state.ControlListening, state.ControlAddress)
+	}
+	if !strings.Contains(state.Message, "直连监听已启动：100.79.83.104:17890") {
+		t.Fatalf("expected direct listening success message, got %q", state.Message)
+	}
+}
+
+func TestDirectControllerStopDirectModeClearsListeningState(t *testing.T) {
+	mgr := &fakeDirectManager{ready: directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104"}}
+	ctrl := NewDirectController(mgr)
+
+	if err := ctrl.StartDirectMode(context.Background(), "shared-secret", "100.79.83.104:17890"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ctrl.StopDirectMode(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	state := ctrl.State()
+	if state.ControlListening || state.ControlAddress != "" {
+		t.Fatalf("expected listening state to be cleared, got listening=%v address=%q", state.ControlListening, state.ControlAddress)
+	}
+}
+
 func TestDirectControllerStartDirectModeSucceedsWhenRefreshFails(t *testing.T) {
 	mgr := &fakeDirectManager{
 		ready:      directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104"},
@@ -175,6 +216,19 @@ func TestDirectControllerPairPeerSucceedsWhenRefreshFails(t *testing.T) {
 	}
 	if ctrl.State().Message == "" {
 		t.Fatal("expected warning or success message after refresh failure")
+	}
+}
+
+func TestDirectControllerPairPeerKeepsSuccessMessageAfterRefresh(t *testing.T) {
+	mgr := &fakeDirectManager{ready: directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104"}}
+	ctrl := NewDirectController(mgr)
+
+	if err := ctrl.PairPeer(context.Background(), "100.109.251.97"); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(ctrl.State().Message, "已配对：desktop-b") {
+		t.Fatalf("expected pairing success message to remain visible, got %q", ctrl.State().Message)
 	}
 }
 
@@ -295,6 +349,20 @@ func TestGeneratePairingSecretReturnsShareableSecret(t *testing.T) {
 		if r < 'A' || r > 'Z' {
 			t.Fatalf("expected uppercase shareable characters, got %q in %q", r, secret)
 		}
+	}
+}
+
+func TestPairSuccessDialogMessageUsesPairedState(t *testing.T) {
+	state := DirectState{Message: "已配对：desktop-b"}
+	if got := pairSuccessDialogMessage(state); got != "已配对：desktop-b" {
+		t.Fatalf("expected paired state message, got %q", got)
+	}
+}
+
+func TestPairSuccessDialogMessageFallsBack(t *testing.T) {
+	state := DirectState{Message: "Tailscale 已就绪"}
+	if got := pairSuccessDialogMessage(state); got != "配对成功，已加入可信设备。" {
+		t.Fatalf("expected fallback success message, got %q", got)
 	}
 }
 

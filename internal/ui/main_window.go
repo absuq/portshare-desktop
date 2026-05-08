@@ -28,8 +28,9 @@ func (a *App) buildMainWindow() fyne.Window {
 	statusLabel := widget.NewLabel("Tailscale：未检测")
 	statusLabel.TextStyle = fyne.TextStyle{Bold: true}
 	ipLabel := widget.NewLabel("本机 IP：-")
+	controlLabel := widget.NewLabel("portshare：未启用")
 	messageLabel := widget.NewLabel("准备就绪")
-	for _, label := range []*widget.Label{statusLabel, ipLabel, messageLabel} {
+	for _, label := range []*widget.Label{statusLabel, ipLabel, controlLabel, messageLabel} {
 		label.Wrapping = fyne.TextWrapWord
 	}
 
@@ -119,12 +120,16 @@ func (a *App) buildMainWindow() fyne.Window {
 			if current.LocalTailscaleIP == "" {
 				return errors.New("请先检测 Tailscale，确认本机 IP 后再配对")
 			}
-			return a.directCtrl.PairPeerWithSecret(
+			if err := a.directCtrl.PairPeerWithSecret(
 				ctx,
 				peerEntry.Text,
 				secretEntry.Text,
 				net.JoinHostPort(current.LocalTailscaleIP, defaultDirectControlPort),
-			)
+			); err != nil {
+				return err
+			}
+			dialog.ShowInformation("配对成功", pairSuccessDialogMessage(a.directCtrl.State()), w)
+			return nil
 		})
 	})
 
@@ -136,6 +141,11 @@ func (a *App) buildMainWindow() fyne.Window {
 			statusLabel.SetText("Tailscale：未就绪")
 		}
 		ipLabel.SetText("本机 IP：" + valueOrDash(state.LocalTailscaleIP))
+		if state.ControlListening {
+			controlLabel.SetText("portshare：监听中 " + valueOrDash(state.ControlAddress))
+		} else {
+			controlLabel.SetText("portshare：未启用")
+		}
 		if state.Message != "" {
 			messageLabel.SetText(state.Message)
 		}
@@ -149,7 +159,7 @@ func (a *App) buildMainWindow() fyne.Window {
 	}
 	a.refreshUI = render
 
-	statusBand := container.NewVBox(statusLabel, ipLabel, messageLabel)
+	statusBand := container.NewVBox(statusLabel, ipLabel, controlLabel, messageLabel)
 	setupPanel := container.NewVBox(
 		widget.NewLabel("直连密钥"),
 		secretEntry,
@@ -223,4 +233,11 @@ func valueOrDash(value string) string {
 		return "-"
 	}
 	return value
+}
+
+func pairSuccessDialogMessage(state DirectState) string {
+	if strings.HasPrefix(state.Message, "已配对：") {
+		return state.Message
+	}
+	return "配对成功，已加入可信设备。"
 }

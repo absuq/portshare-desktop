@@ -26,6 +26,7 @@ type DirectManager interface {
 	Ready(context.Context) directmanager.ReadyState
 	StartControlServer(context.Context, string, string) error
 	StopControlServer(context.Context) error
+	ControlAddress() string
 	PairPeer(context.Context, string) (directmanager.PairedPeer, error)
 	TrustedPeers(context.Context) ([]directmanager.TrustedPeer, error)
 }
@@ -38,6 +39,8 @@ type DirectController struct {
 type DirectState struct {
 	Ready            bool
 	LocalTailscaleIP string
+	ControlListening bool
+	ControlAddress   string
 	DiagnosticCode   tailscale.DiagnosticCode
 	Message          string
 	Peers            []directmanager.TrustedPeer
@@ -65,10 +68,18 @@ func (c *DirectController) StartDirectMode(ctx context.Context, secret string, l
 		c.state.Message = "启动直连监听失败：" + err.Error()
 		return err
 	}
-	c.state.Message = "直连监听已启动"
-	if err := c.Refresh(ctx); err != nil {
-		c.state.Message = "直连监听已启动，但状态刷新失败：" + err.Error()
+	c.updateControlState()
+	if c.state.ControlAddress == "" {
+		c.state.ControlAddress = listenAddress
+		c.state.ControlListening = true
 	}
+	successMessage := controlListeningMessage(c.state.ControlAddress)
+	c.state.Message = successMessage
+	if err := c.Refresh(ctx); err != nil {
+		c.state.Message = successMessage + "，但状态刷新失败：" + err.Error()
+		return nil
+	}
+	c.state.Message = controlListeningMessage(c.state.ControlAddress)
 	return nil
 }
 
@@ -80,6 +91,7 @@ func (c *DirectController) StopDirectMode(ctx context.Context) error {
 		c.state.Message = "停止直连监听失败：" + err.Error()
 		return err
 	}
+	c.updateControlState()
 	c.state.Message = "直连监听已停止"
 	return nil
 }
@@ -89,17 +101,22 @@ func (c *DirectController) Refresh(ctx context.Context) error {
 		return err
 	}
 	ready := c.manager.Ready(ctx)
+	c.state.Ready = ready.Ready
+	c.state.LocalTailscaleIP = ready.LocalTailscaleIP
+	c.state.DiagnosticCode = ready.Code
+	c.updateControlState()
 	peers, err := c.manager.TrustedPeers(ctx)
 	if err != nil {
 		c.state.Message = "读取可信设备失败：" + err.Error()
 		return err
 	}
-	c.state.Ready = ready.Ready
-	c.state.LocalTailscaleIP = ready.LocalTailscaleIP
-	c.state.DiagnosticCode = ready.Code
 	c.state.Peers = copyTrustedPeers(peers)
 	if ready.Ready {
-		c.state.Message = "Tailscale 已就绪"
+		if c.state.ControlListening {
+			c.state.Message = controlListeningMessage(c.state.ControlAddress)
+		} else {
+			c.state.Message = "Tailscale 已就绪"
+		}
 	} else {
 		c.state.Message = ready.Message
 	}
@@ -140,10 +157,13 @@ func (c *DirectController) pairNormalizedPeer(ctx context.Context, address strin
 		c.state.Message = "配对失败：" + err.Error()
 		return err
 	}
-	c.state.Message = "已配对：" + displayPeerName(peer.DeviceName, peer.DeviceID)
+	successMessage := "已配对：" + displayPeerName(peer.DeviceName, peer.DeviceID)
+	c.state.Message = successMessage
 	if err := c.Refresh(ctx); err != nil {
-		c.state.Message = "已配对：" + displayPeerName(peer.DeviceName, peer.DeviceID) + "；状态刷新失败：" + err.Error()
+		c.state.Message = successMessage + "；状态刷新失败：" + err.Error()
+		return nil
 	}
+	c.state.Message = successMessage
 	return nil
 }
 
@@ -170,6 +190,20 @@ func (c *DirectController) requireManager() error {
 		return ErrDirectManagerRequired
 	}
 	return nil
+}
+
+func (c *DirectController) updateControlState() {
+	address := strings.TrimSpace(c.manager.ControlAddress())
+	c.state.ControlAddress = address
+	c.state.ControlListening = address != ""
+}
+
+func controlListeningMessage(address string) string {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return "直连监听已启动"
+	}
+	return "直连监听已启动：" + address
 }
 
 func normalizePeerControlAddress(address string) (string, error) {
