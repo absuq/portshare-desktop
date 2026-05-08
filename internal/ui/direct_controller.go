@@ -144,6 +144,7 @@ func (c *DirectController) PairPeerWithSecret(ctx context.Context, peerAddress s
 func (c *DirectController) pairNormalizedPeer(ctx context.Context, address string) error {
 	peer, err := c.manager.PairPeer(ctx, address)
 	if err != nil {
+		err = describePairError(address, err)
 		c.state.Message = "配对失败：" + err.Error()
 		return err
 	}
@@ -152,6 +153,17 @@ func (c *DirectController) pairNormalizedPeer(ctx context.Context, address strin
 		c.state.Message = "已配对：" + displayPeerName(peer.DeviceName, peer.DeviceID) + "；状态刷新失败：" + err.Error()
 	}
 	return nil
+}
+
+func describePairError(address string, err error) error {
+	if err == nil {
+		return nil
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "actively refused") || strings.Contains(message, "connection refused") {
+		return fmt.Errorf("对方 %s 没有接受 portshare 直连连接。请确认对方电脑也运行新版 portshare，输入同一个直连密钥，并点击“启用直连密钥”；如果已经启用，请检查 Tailscale Shields Up 或 Windows 防火墙是否拦截 17890。原始错误：%w", address, err)
+	}
+	return err
 }
 
 func (c *DirectController) CreateForward(ctx context.Context, peerID, targetHost string, targetPort int, localAddress string) error {

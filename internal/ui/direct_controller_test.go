@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	directmanager "github.com/absuq/portshare-desktop/internal/direct/manager"
@@ -256,6 +257,27 @@ func TestDirectControllerPairPeerSucceedsWhenRefreshFails(t *testing.T) {
 	}
 	if ctrl.State().Message == "" {
 		t.Fatal("expected warning or success message after refresh failure")
+	}
+}
+
+func TestDirectControllerPairPeerExplainsConnectionRefused(t *testing.T) {
+	mgr := &fakeDirectManager{
+		pairErr: errors.New("dial tcp 100.79.83.104:17890: connectex: No connection could be made because the target machine actively refused it"),
+	}
+	ctrl := NewDirectController(mgr)
+
+	err := ctrl.PairPeer(context.Background(), "100.79.83.104")
+	if err == nil {
+		t.Fatal("expected pairing error")
+	}
+	if !strings.Contains(err.Error(), "对方 100.79.83.104:17890 没有接受 portshare 直连连接") {
+		t.Fatalf("expected actionable connection refused message, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "启用直连密钥") {
+		t.Fatalf("expected message to mention enabling direct key, got %v", err)
+	}
+	if !strings.Contains(ctrl.State().Message, "配对失败：对方 100.79.83.104:17890") {
+		t.Fatalf("expected state message to include friendly pairing failure, got %q", ctrl.State().Message)
 	}
 }
 
