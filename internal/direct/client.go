@@ -2,8 +2,6 @@ package direct
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"net"
 	"time"
 
@@ -41,55 +39,6 @@ func (c Client) Pair(ctx context.Context, address string) (PairedPeer, error) {
 	defer stopCancelWatcher()
 
 	return peer, nil
-}
-
-func (c Client) OpenTCP(ctx context.Context, peerAddress, targetHost string, targetPort int) (net.Conn, error) {
-	conn, _, stopCancelWatcher, err := c.authenticate(ctx, peerAddress)
-	if err != nil {
-		return nil, err
-	}
-
-	closeOnError := true
-	defer func() {
-		stopCancelWatcher()
-		if closeOnError {
-			_ = conn.Close()
-		}
-	}()
-
-	contextErr := func(err error) error {
-		if err == nil {
-			return nil
-		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
-		return err
-	}
-
-	if err := protocol.WriteFrame(conn, protocol.ControlMessage{
-		Type:       protocol.TypeOpenTCP,
-		Version:    protocol.Version,
-		TargetHost: targetHost,
-		TargetPort: targetPort,
-	}); err != nil {
-		return nil, contextErr(err)
-	}
-
-	var response protocol.ControlMessage
-	if err := protocol.ReadFrame(conn, &response); err != nil {
-		return nil, contextErr(err)
-	}
-	switch {
-	case response.Type == protocol.TypeOpenTCPOK && response.Version == protocol.Version:
-		_ = conn.SetDeadline(time.Time{})
-		closeOnError = false
-		return conn, nil
-	case response.Type == protocol.TypeOpenTCPError && response.Error != "":
-		return nil, errors.New(response.Error)
-	default:
-		return nil, fmt.Errorf("unexpected open_tcp response: %s", response.Type)
-	}
 }
 
 func (c Client) authenticate(ctx context.Context, address string) (net.Conn, PairedPeer, func(), error) {

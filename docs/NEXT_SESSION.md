@@ -4,30 +4,31 @@
 
 - 工作分支：`codex/portshare-direct-mode`
 - worktree：`D:\developsoftweare\portshare-desktop\.worktrees\portshare-mvp`
-- 主要规格：`docs/superpowers/specs/2026-05-07-portshare-direct-mode-design.md`
-- 主要计划：`docs/superpowers/plans/2026-05-07-portshare-direct-mode.md`
+- 当前规格：`docs/superpowers/specs/2026-05-07-portshare-direct-mode-design.md`
+- 当前移除计划：`docs/superpowers/plans/2026-05-08-portshare-remove-forwarding.md`
 
 ## 当前 MVP 方向
 
-`portshare` 的主路径已经切换为 direct-mode：
+`portshare` 当前阶段只做双机 Tailscale 直连配对：
 
 - 两台电脑都运行 `portshare`。
 - 两台电脑输入同一个共享密钥。
-- 一方输入对方 Tailscale IP 或 MagicDNS 名称完成配对。
-- 配对后创建本地 TCP 转发，例如 `127.0.0.1:18080 -> 对方 portshare -> 127.0.0.1:3000`。
+- 两台电脑启用直连密钥，监听各自的 Tailscale IP `:17890`。
+- 任意一方输入对方 Tailscale IP 或 MagicDNS 名称完成配对。
+- 配对结果写入可信设备列表。
 
-Tailscale Serve/Funnel 代码仍保留为 legacy，但不是当前 MVP 主路径。
+当前 MVP 不做本地业务端口转发，也不代理任意 TCP 业务流量。关闭 `portshare` 只会停止 `17890` 控制监听，不会关闭 Tailscale 自身的 tailnet 连通性。
 
 ## 已完成
 
 - 可见产品名统一为 `portshare`。
 - 新增 `internal/tailscale` 诊断适配器。
 - 新增 direct protocol、HMAC 共享密钥握手、可信设备存储。
-- 新增 direct server/client、TCP forward 和 direct manager。
-- direct manager 已支持控制监听启动/停止、配对、可信设备读取、创建/停止本地转发。
+- 新增 direct server/client 和 direct manager。
 - 主窗口已切换为 direct-mode UI。
 - `cmd/portshare/main.go` 已注入真实 direct manager。
-- 手动验收文档已切换为双机 direct-mode 验收步骤。
+- 已移除本地业务端口转发 UI、manager 编排、协议消息和 forward 包。
+- 手动验收文档已切换为双机配对验收步骤。
 
 ## 本地验证命令
 
@@ -44,8 +45,8 @@ $env:CGO_ENABLED = '1'
 
 ## 下一步
 
-1. 按 `docs/manual-verification.md` 做真实双机 direct-mode 验收。
+1. 按 `docs/manual-verification.md` 做真实双机配对验收。
 2. 在 UI 中展示 `tailscale ping` 的 direct/DERP 路由与延迟。
-3. 增加可信设备删除，并停止关联转发。
-4. 增加更清晰的 Tailscale DNS/Shields Up 故障提示。
-5. 做最终 `go test ./...`、`go vet ./...`、build 和 push。
+3. 增加可信设备删除。
+4. 增加更清晰的 Tailscale DNS/Shields Up/Windows 防火墙故障提示。
+5. 单独设计下一阶段“公网转发”能力。

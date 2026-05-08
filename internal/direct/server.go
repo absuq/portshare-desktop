@@ -3,10 +3,7 @@ package direct
 import (
 	"context"
 	"errors"
-	"fmt"
-	"io"
 	"net"
-	"strconv"
 	"sync"
 	"time"
 
@@ -155,56 +152,13 @@ func (s *Server) handle(conn net.Conn) {
 		DeviceID:   s.config.DeviceID,
 		DeviceName: s.config.DeviceName,
 	})
-
-	var next protocol.ControlMessage
-	if err := protocol.ReadFrame(conn, &next); err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return
-		}
-		return
-	}
-	if next.Type != protocol.TypeOpenTCP || next.Version != protocol.Version {
-		_ = writeOpenTCPError(conn, fmt.Sprintf("unexpected message: %s", next.Type))
-		return
-	}
-	s.handleOpenTCP(conn, next)
-}
-
-func (s *Server) handleOpenTCP(conn net.Conn, msg protocol.ControlMessage) {
-	dialer := net.Dialer{Timeout: 10 * time.Second}
-	target, err := dialer.DialContext(s.ctx, "tcp", net.JoinHostPort(msg.TargetHost, strconv.Itoa(msg.TargetPort)))
-	if err != nil {
-		_ = writeOpenTCPError(conn, err.Error())
-		return
-	}
-	if !s.addActive(target) {
-		_ = target.Close()
-		return
-	}
-	defer s.removeActive(target)
-
-	if err := protocol.WriteFrame(conn, protocol.ControlMessage{
-		Type:    protocol.TypeOpenTCPOK,
-		Version: protocol.Version,
-	}); err != nil {
-		return
-	}
-
-	_ = conn.SetDeadline(time.Time{})
-	_ = target.SetDeadline(time.Time{})
-
-	PipeBidirectional(conn, target)
 }
 
 func writeAuthFailure(conn net.Conn) error {
-	return writeOpenTCPError(conn, ErrAuthFailed.Error())
-}
-
-func writeOpenTCPError(conn net.Conn, text string) error {
 	return protocol.WriteFrame(conn, protocol.ControlMessage{
-		Type:    protocol.TypeOpenTCPError,
+		Type:    protocol.TypeAuthError,
 		Version: protocol.Version,
-		Error:   text,
+		Error:   ErrAuthFailed.Error(),
 	})
 }
 

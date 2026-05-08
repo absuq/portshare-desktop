@@ -3,20 +3,15 @@ package manager
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	direct "github.com/absuq/portshare-desktop/internal/direct"
-	directforward "github.com/absuq/portshare-desktop/internal/direct/forward"
 	"github.com/absuq/portshare-desktop/internal/direct/store"
 	"github.com/absuq/portshare-desktop/internal/tailscale"
 )
-
-const defaultDirectControlPort = 17890
 
 type Tailscale interface {
 	CheckReady(context.Context) tailscale.ReadyReport
@@ -24,36 +19,27 @@ type Tailscale interface {
 }
 
 type Config struct {
-	Tailscale         Tailscale
-	PairClient        PairClient
-	PeerStore         PeerStore
-	DirectClient      directforward.DirectClient
-	ForwardFactory    ForwardFactory
-	DirectControlPort int
-	SecretLabel       string
-	DeviceID          string
-	DeviceName        string
+	Tailscale   Tailscale
+	PairClient  PairClient
+	PeerStore   PeerStore
+	SecretLabel string
+	DeviceID    string
+	DeviceName  string
 }
 
 type Manager struct {
-	tailscale         Tailscale
-	pairClient        PairClient
-	peerStore         PeerStore
-	directClient      directforward.DirectClient
-	forwardFactory    ForwardFactory
-	directControlPort int
-	secretLabel       string
-	deviceID          string
-	deviceName        string
+	tailscale   Tailscale
+	pairClient  PairClient
+	peerStore   PeerStore
+	secretLabel string
+	deviceID    string
+	deviceName  string
 
 	authMu          sync.RWMutex
 	controlMu       sync.Mutex
 	controlServer   *direct.Server
 	controlListener net.Listener
 	peerMu          sync.Mutex
-	forwardMu       sync.Mutex
-	nextForwardSeq  int
-	forwards        map[string]runningForward
 }
 
 type PairedPeer = direct.PairedPeer
@@ -69,42 +55,6 @@ type PeerStore interface {
 
 type TrustedPeer = store.TrustedPeer
 
-type Forward interface {
-	Start(context.Context) error
-	Stop()
-	LocalAddress() string
-}
-
-type ForwardFactory interface {
-	New(directforward.Options) Forward
-}
-
-type realForwardFactory struct{}
-
-func (realForwardFactory) New(options directforward.Options) Forward {
-	return directforward.New(options)
-}
-
-type ForwardRequest struct {
-	PeerID       string
-	TargetHost   string
-	TargetPort   int
-	LocalAddress string
-}
-
-type RunningForward struct {
-	ID           string
-	PeerID       string
-	LocalAddress string
-	Target       string
-}
-
-type runningForward struct {
-	info   RunningForward
-	handle Forward
-	cancel context.CancelFunc
-}
-
 type ReadyState struct {
 	Ready            bool
 	LocalTailscaleIP string
@@ -113,25 +63,13 @@ type ReadyState struct {
 }
 
 func New(config Config) *Manager {
-	forwardFactory := config.ForwardFactory
-	if forwardFactory == nil {
-		forwardFactory = realForwardFactory{}
-	}
-	directControlPort := config.DirectControlPort
-	if directControlPort == 0 {
-		directControlPort = defaultDirectControlPort
-	}
 	return &Manager{
-		tailscale:         config.Tailscale,
-		pairClient:        config.PairClient,
-		peerStore:         config.PeerStore,
-		directClient:      config.DirectClient,
-		forwardFactory:    forwardFactory,
-		directControlPort: directControlPort,
-		secretLabel:       config.SecretLabel,
-		deviceID:          config.DeviceID,
-		deviceName:        config.DeviceName,
-		forwards:          make(map[string]runningForward),
+		tailscale:   config.Tailscale,
+		pairClient:  config.PairClient,
+		peerStore:   config.PeerStore,
+		secretLabel: config.SecretLabel,
+		deviceID:    config.DeviceID,
+		deviceName:  config.DeviceName,
 	}
 }
 
@@ -214,7 +152,6 @@ func (m *Manager) StartControlServer(ctx context.Context, listenAddress string, 
 
 	m.authMu.Lock()
 	m.pairClient = client
-	m.directClient = client
 	m.secretLabel = store.DeriveSecretLabel(secret)
 	m.authMu.Unlock()
 
@@ -301,111 +238,6 @@ func (m *Manager) TrustedPeers(ctx context.Context) ([]TrustedPeer, error) {
 	return m.peerStore.LoadPeers()
 }
 
-func (m *Manager) CreateForward(ctx context.Context, req ForwardRequest) (RunningForward, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := ctx.Err(); err != nil {
-		return RunningForward{}, err
-	}
-	if m.peerStore == nil {
-		return RunningForward{}, errors.New("peer store is not configured")
-	}
-	m.authMu.RLock()
-	directClient := m.directClient
-	m.authMu.RUnlock()
-	if directClient == nil {
-		return RunningForward{}, errors.New("direct client is not configured")
-	}
-	if req.PeerID == "" {
-		return RunningForward{}, errors.New("peer ID is required")
-	}
-	if req.TargetHost == "" {
-		return RunningForward{}, errors.New("target host is required")
-	}
-	if req.TargetPort <= 0 {
-		return RunningForward{}, errors.New("target port is required")
-	}
-	if strings.TrimSpace(req.LocalAddress) == "" {
-		req.LocalAddress = "127.0.0.1:0"
-	}
-
-	m.peerMu.Lock()
-	peers, err := m.peerStore.LoadPeers()
-	m.peerMu.Unlock()
-	if err != nil {
-		return RunningForward{}, err
-	}
-	peer, ok := findTrustedPeer(peers, req.PeerID)
-	if !ok {
-		return RunningForward{}, fmt.Errorf("unknown trusted peer %q", req.PeerID)
-	}
-	peerAddress := peerControlAddress(peer, m.directControlPort)
-	if peerAddress == "" {
-		return RunningForward{}, fmt.Errorf("trusted peer %q has no tailscale address", req.PeerID)
-	}
-
-	handle := m.forwardFactory.New(directforward.Options{
-		LocalAddress: req.LocalAddress,
-		PeerAddress:  peerAddress,
-		TargetHost:   req.TargetHost,
-		TargetPort:   req.TargetPort,
-		DirectClient: directClient,
-	})
-	if handle == nil {
-		return RunningForward{}, errors.New("forward factory returned nil")
-	}
-	forwardCtx, cancel := context.WithCancel(context.Background())
-	if err := handle.Start(forwardCtx); err != nil {
-		cancel()
-		return RunningForward{}, err
-	}
-	localAddress := handle.LocalAddress()
-	if localAddress == "" {
-		localAddress = req.LocalAddress
-	}
-
-	m.forwardMu.Lock()
-	defer m.forwardMu.Unlock()
-
-	m.nextForwardSeq++
-	running := RunningForward{
-		ID:           fmt.Sprintf("forward-%d", m.nextForwardSeq),
-		PeerID:       req.PeerID,
-		LocalAddress: localAddress,
-		Target:       net.JoinHostPort(req.TargetHost, strconv.Itoa(req.TargetPort)),
-	}
-	m.forwards[running.ID] = runningForward{info: running, handle: handle, cancel: cancel}
-	return running, nil
-}
-
-func (m *Manager) StopForward(ctx context.Context, id string) error {
-	_ = ctx
-	m.forwardMu.Lock()
-	forward, ok := m.forwards[id]
-	if ok {
-		delete(m.forwards, id)
-	}
-	m.forwardMu.Unlock()
-	if !ok {
-		return fmt.Errorf("unknown forward %q", id)
-	}
-	if forward.cancel != nil {
-		forward.cancel()
-	}
-	forward.handle.Stop()
-	return nil
-}
-
-func findTrustedPeer(peers []store.TrustedPeer, id string) (store.TrustedPeer, bool) {
-	for _, peer := range peers {
-		if peer.ID == id {
-			return peer, true
-		}
-	}
-	return store.TrustedPeer{}, false
-}
-
 func trustedPeerFromPair(peer direct.PairedPeer, address string, secretLabel string) store.TrustedPeer {
 	now := time.Now()
 	if peer.Address == "" {
@@ -451,18 +283,4 @@ func hostFromAddress(address string) string {
 		return host
 	}
 	return address
-}
-
-func peerControlAddress(peer store.TrustedPeer, defaultPort int) string {
-	address := strings.TrimSpace(peer.TailscaleIP)
-	if address == "" {
-		return ""
-	}
-	if _, _, err := net.SplitHostPort(address); err == nil {
-		return address
-	}
-	if defaultPort <= 0 {
-		return address
-	}
-	return net.JoinHostPort(address, strconv.Itoa(defaultPort))
 }

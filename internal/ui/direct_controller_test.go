@@ -15,17 +15,12 @@ type fakeDirectManager struct {
 	ready              directmanager.ReadyState
 	readyCalls         int
 	peers              []directmanager.TrustedPeer
-	forward            directmanager.RunningForward
-	forwards           []directmanager.RunningForward
 	started            bool
 	startListenAddress string
 	startSecret        string
 	pairAddress        string
-	createRequest      directmanager.ForwardRequest
-	stopForwardID      string
 	trustedErr         error
 	pairErr            error
-	createErr          error
 }
 
 func (f *fakeDirectManager) Ready(context.Context) directmanager.ReadyState {
@@ -62,32 +57,6 @@ func (f *fakeDirectManager) TrustedPeers(context.Context) ([]directmanager.Trust
 	return append([]directmanager.TrustedPeer(nil), f.peers...), nil
 }
 
-func (f *fakeDirectManager) CreateForward(_ context.Context, req directmanager.ForwardRequest) (directmanager.RunningForward, error) {
-	f.createRequest = req
-	if f.createErr != nil {
-		return directmanager.RunningForward{}, f.createErr
-	}
-	f.forward = directmanager.RunningForward{
-		ID:           "fwd-1",
-		PeerID:       req.PeerID,
-		LocalAddress: "127.0.0.1:18080",
-		Target:       "127.0.0.1:3000",
-	}
-	f.forwards = append(f.forwards, f.forward)
-	return f.forward, nil
-}
-
-func (f *fakeDirectManager) StopForward(_ context.Context, id string) error {
-	f.stopForwardID = id
-	for i := 0; i < len(f.forwards); i++ {
-		if f.forwards[i].ID == id {
-			f.forwards = append(f.forwards[:i], f.forwards[i+1:]...)
-			i--
-		}
-	}
-	return nil
-}
-
 func TestDirectControllerRefreshShowsReadyState(t *testing.T) {
 	mgr := &fakeDirectManager{ready: directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104", Code: tailscale.CodeOK}}
 	ctrl := NewDirectController(mgr)
@@ -100,8 +69,8 @@ func TestDirectControllerRefreshShowsReadyState(t *testing.T) {
 	if !state.Ready || state.LocalTailscaleIP != "100.79.83.104" {
 		t.Fatalf("unexpected state: %+v", state)
 	}
-	if len(state.Peers) != 0 || len(state.Forwards) != 0 {
-		t.Fatalf("expected empty peers and forwards, got %+v", state)
+	if len(state.Peers) != 0 {
+		t.Fatalf("expected empty peers, got %+v", state)
 	}
 }
 
@@ -160,57 +129,6 @@ func TestDirectControllerPairRejectsBadPort(t *testing.T) {
 		if err := ctrl.PairPeer(context.Background(), input); !errors.Is(err, ErrDirectPeerAddressInvalid) {
 			t.Fatalf("PairPeer(%q) expected ErrDirectPeerAddressInvalid, got %v", input, err)
 		}
-	}
-}
-
-func TestDirectControllerCreateAndStopForward(t *testing.T) {
-	mgr := &fakeDirectManager{peers: []directmanager.TrustedPeer{
-		{ID: "device-b", DisplayName: "desktop-b", TailscaleIP: "100.109.251.97"},
-	}}
-	ctrl := NewDirectController(mgr)
-	if err := ctrl.Refresh(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := ctrl.CreateForward(context.Background(), "device-b", "127.0.0.1", 3000, "127.0.0.1:18080"); err != nil {
-		t.Fatal(err)
-	}
-
-	if mgr.createRequest.PeerID != "device-b" || mgr.createRequest.TargetPort != 3000 {
-		t.Fatalf("unexpected forward request: %+v", mgr.createRequest)
-	}
-	state := ctrl.State()
-	if len(state.Forwards) != 1 || state.Forwards[0].LocalAddress != "127.0.0.1:18080" {
-		t.Fatalf("unexpected forwards: %+v", state.Forwards)
-	}
-
-	if err := ctrl.StopForward(context.Background(), "fwd-1"); err != nil {
-		t.Fatal(err)
-	}
-	if mgr.stopForwardID != "fwd-1" {
-		t.Fatalf("expected stop call for fwd-1, got %q", mgr.stopForwardID)
-	}
-	if len(ctrl.State().Forwards) != 0 {
-		t.Fatalf("expected stopped forward removed, got %+v", ctrl.State().Forwards)
-	}
-}
-
-func TestDirectControllerCreateForwardKeepsForwardVisibleWhenRefreshFails(t *testing.T) {
-	mgr := &fakeDirectManager{
-		peers: []directmanager.TrustedPeer{{ID: "device-b", DisplayName: "desktop-b", TailscaleIP: "100.109.251.97"}},
-	}
-	ctrl := NewDirectController(mgr)
-	if err := ctrl.Refresh(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-
-	mgr.trustedErr = errors.New("store unavailable")
-	if err := ctrl.CreateForward(context.Background(), "device-b", "127.0.0.1", 3000, "127.0.0.1:18080"); err != nil {
-		t.Fatal(err)
-	}
-	state := ctrl.State()
-	if len(state.Forwards) != 1 || state.Forwards[0].ID != "fwd-1" {
-		t.Fatalf("expected running forward to stay visible after refresh failure, got %+v", state.Forwards)
 	}
 }
 
@@ -321,16 +239,12 @@ func TestDirectControllerStateIsImmutableSnapshot(t *testing.T) {
 	if err := ctrl.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := ctrl.CreateForward(context.Background(), "device-b", "127.0.0.1", 3000, "127.0.0.1:18080"); err != nil {
-		t.Fatal(err)
-	}
 
 	state := ctrl.State()
 	state.Peers[0].ID = "mutated-peer"
-	state.Forwards[0].ID = "mutated-forward"
 
 	next := ctrl.State()
-	if next.Peers[0].ID != "device-b" || next.Forwards[0].ID != "fwd-1" {
+	if next.Peers[0].ID != "device-b" {
 		t.Fatalf("state mutation leaked into controller: %+v", next)
 	}
 }
@@ -360,37 +274,6 @@ func TestDirectControllerRejectsMissingInputs(t *testing.T) {
 	}
 	if err := ctrl.PairPeer(context.Background(), " "); !errors.Is(err, ErrDirectPeerAddressRequired) {
 		t.Fatalf("expected ErrDirectPeerAddressRequired, got %v", err)
-	}
-	if err := ctrl.CreateForward(context.Background(), "", "127.0.0.1", 3000, "127.0.0.1:0"); !errors.Is(err, ErrDirectPeerRequired) {
-		t.Fatalf("expected ErrDirectPeerRequired, got %v", err)
-	}
-	if err := ctrl.CreateForward(context.Background(), "device-b", "127.0.0.1", 0, "127.0.0.1:0"); !errors.Is(err, ErrDirectTargetPortRequired) {
-		t.Fatalf("expected ErrDirectTargetPortRequired, got %v", err)
-	}
-	if err := ctrl.CreateForward(context.Background(), "device-b", "127.0.0.1", 70000, "127.0.0.1:0"); !errors.Is(err, ErrDirectTargetPortRequired) {
-		t.Fatalf("expected ErrDirectTargetPortRequired for oversized port, got %v", err)
-	}
-}
-
-func TestLocalListenAddressAcceptsOnlyLocalPort(t *testing.T) {
-	got, err := localListenAddress("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "127.0.0.1:0" {
-		t.Fatalf("unexpected automatic local address: %s", got)
-	}
-	got, err = localListenAddress("18080")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "127.0.0.1:18080" {
-		t.Fatalf("unexpected local address: %s", got)
-	}
-	for _, input := range []string{"localhost:18080", ":18080", "abc", "70000", "0"} {
-		if _, err := localListenAddress(input); err == nil {
-			t.Fatalf("expected localListenAddress(%q) to fail", input)
-		}
 	}
 }
 

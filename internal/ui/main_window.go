@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"strconv"
 	"strings"
 	"time"
 
@@ -24,7 +23,6 @@ func (a *App) buildMainWindow() fyne.Window {
 
 	var state DirectState
 	var selectedPeerID string
-	var selectedForwardID string
 	var render func()
 
 	statusLabel := widget.NewLabel("Tailscale：未检测")
@@ -39,13 +37,6 @@ func (a *App) buildMainWindow() fyne.Window {
 	secretEntry.SetPlaceHolder("共享密钥")
 	peerEntry := widget.NewEntry()
 	peerEntry.SetPlaceHolder("对方 Tailscale IP 或 MagicDNS")
-	targetHostEntry := widget.NewEntry()
-	targetHostEntry.SetPlaceHolder("远端 host")
-	targetHostEntry.SetText("127.0.0.1")
-	targetPortEntry := widget.NewEntry()
-	targetPortEntry.SetPlaceHolder("远端端口")
-	localPortEntry := widget.NewEntry()
-	localPortEntry.SetPlaceHolder("本地端口，留空自动分配")
 
 	peers := widget.NewList(
 		func() int { return len(state.Peers) },
@@ -74,36 +65,6 @@ func (a *App) buildMainWindow() fyne.Window {
 			return
 		}
 		selectedPeerID = state.Peers[id].ID
-		render()
-	}
-
-	forwards := widget.NewList(
-		func() int { return len(state.Forwards) },
-		func() fyne.CanvasObject {
-			local := widget.NewLabel("本地入口")
-			local.TextStyle = fyne.TextStyle{Bold: true}
-			target := widget.NewLabel("远端目标")
-			target.Wrapping = fyne.TextWrapWord
-			return container.NewVBox(local, target)
-		},
-		func(id widget.ListItemID, obj fyne.CanvasObject) {
-			if id < 0 || id >= len(state.Forwards) {
-				return
-			}
-			forward := state.Forwards[id]
-			box := obj.(*fyne.Container)
-			local := box.Objects[0].(*widget.Label)
-			target := box.Objects[1].(*widget.Label)
-			local.SetText(forward.LocalAddress)
-			target.SetText(forward.Target)
-		},
-	)
-	forwards.OnSelected = func(id widget.ListItemID) {
-		if id < 0 || id >= len(state.Forwards) {
-			selectedForwardID = ""
-			return
-		}
-		selectedForwardID = state.Forwards[id].ID
 		render()
 	}
 
@@ -167,43 +128,6 @@ func (a *App) buildMainWindow() fyne.Window {
 		})
 	})
 
-	var stopForwardButton *widget.Button
-	forwardButton := widget.NewButton("创建本地转发", func() {
-		withTimeout(func(ctx context.Context) error {
-			peerID := selectedPeerID
-			current := a.directCtrl.State()
-			if peerID == "" && len(current.Peers) > 0 {
-				peerID = current.Peers[0].ID
-			}
-			remotePort, err := strconv.Atoi(strings.TrimSpace(targetPortEntry.Text))
-			if err != nil {
-				return fmt.Errorf("远端端口无效：%w", err)
-			}
-			if remotePort <= 0 || remotePort > 65535 {
-				return errors.New("远端端口必须在 1-65535 之间")
-			}
-			localAddress, err := localListenAddress(localPortEntry.Text)
-			if err != nil {
-				return err
-			}
-			return a.directCtrl.CreateForward(
-				ctx,
-				peerID,
-				targetHostEntry.Text,
-				remotePort,
-				localAddress,
-			)
-		})
-	})
-	stopForwardButton = widget.NewButton("停止选中转发", func() {
-		withTimeout(func(ctx context.Context) error {
-			if selectedForwardID == "" {
-				return errors.New("请先选择一个转发")
-			}
-			return a.directCtrl.StopForward(ctx, selectedForwardID)
-		})
-	})
-
 	render = func() {
 		state = a.directCtrl.State()
 		if state.Ready {
@@ -216,25 +140,11 @@ func (a *App) buildMainWindow() fyne.Window {
 			messageLabel.SetText(state.Message)
 		}
 		peers.Refresh()
-		forwards.Refresh()
 		if selectedPeerID == "" && len(state.Peers) > 0 {
 			selectedPeerID = state.Peers[0].ID
 		}
 		if !hasPeer(state.Peers, selectedPeerID) {
 			selectedPeerID = ""
-		}
-		if !hasForward(state.Forwards, selectedForwardID) {
-			selectedForwardID = ""
-		}
-		if len(state.Peers) == 0 {
-			forwardButton.Disable()
-		} else {
-			forwardButton.Enable()
-		}
-		if selectedForwardID == "" {
-			stopForwardButton.Disable()
-		} else {
-			stopForwardButton.Enable()
 		}
 	}
 	a.refreshUI = render
@@ -257,40 +167,12 @@ func (a *App) buildMainWindow() fyne.Window {
 		nil,
 		peers,
 	)
-	forwardPanel := container.NewBorder(
-		container.NewVBox(
-			widget.NewLabel("本地转发"),
-			targetHostEntry,
-			targetPortEntry,
-			localPortEntry,
-			forwardButton,
-			stopForwardButton,
-		),
-		nil,
-		nil,
-		nil,
-		forwards,
-	)
 
-	lists := container.NewHSplit(peerPanel, forwardPanel)
-	lists.Offset = 0.45
-	main := container.NewHSplit(setupPanel, lists)
-	main.Offset = 0.28
+	main := container.NewHSplit(setupPanel, peerPanel)
+	main.Offset = 0.32
 	w.SetContent(container.NewBorder(statusBand, nil, nil, nil, main))
 	render()
 	return w
-}
-
-func localListenAddress(portText string) (string, error) {
-	portText = strings.TrimSpace(portText)
-	if portText == "" {
-		return "127.0.0.1:0", nil
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil || port <= 0 || port > 65535 {
-		return "", errors.New("本地端口必须在 1-65535 之间")
-	}
-	return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), nil
 }
 
 const pairingSecretAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -330,15 +212,6 @@ func peerDisplayMeta(peer directmanager.TrustedPeer) string {
 func hasPeer(peers []directmanager.TrustedPeer, id string) bool {
 	for _, peer := range peers {
 		if peer.ID == id {
-			return true
-		}
-	}
-	return false
-}
-
-func hasForward(forwards []directmanager.RunningForward, id string) bool {
-	for _, forward := range forwards {
-		if forward.ID == id {
 			return true
 		}
 	}

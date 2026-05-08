@@ -373,7 +373,7 @@ func TestServerRejectsAuthProofVersionMismatch(t *testing.T) {
 	if err := protocol.ReadFrame(conn, &failure); err != nil {
 		t.Fatal(err)
 	}
-	if failure.Type != protocol.TypeOpenTCPError || failure.Error != ErrAuthFailed.Error() {
+	if failure.Type != protocol.TypeAuthError || failure.Error != ErrAuthFailed.Error() {
 		t.Fatalf("expected auth failure, got %+v", failure)
 	}
 }

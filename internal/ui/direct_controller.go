@@ -20,9 +20,6 @@ var (
 	ErrDirectListenAddressRequired = errors.New("listen address is required")
 	ErrDirectPeerAddressRequired   = errors.New("peer tailscale address is required")
 	ErrDirectPeerAddressInvalid    = errors.New("peer tailscale address is invalid")
-	ErrDirectPeerRequired          = errors.New("trusted peer is required")
-	ErrDirectTargetPortRequired    = errors.New("target port is required")
-	ErrDirectForwardRequired       = errors.New("forward ID is required")
 )
 
 type DirectManager interface {
@@ -31,14 +28,11 @@ type DirectManager interface {
 	StopControlServer(context.Context) error
 	PairPeer(context.Context, string) (directmanager.PairedPeer, error)
 	TrustedPeers(context.Context) ([]directmanager.TrustedPeer, error)
-	CreateForward(context.Context, directmanager.ForwardRequest) (directmanager.RunningForward, error)
-	StopForward(context.Context, string) error
 }
 
 type DirectController struct {
-	manager  DirectManager
-	state    DirectState
-	forwards []directmanager.RunningForward
+	manager DirectManager
+	state   DirectState
 }
 
 type DirectState struct {
@@ -47,7 +41,6 @@ type DirectState struct {
 	DiagnosticCode   tailscale.DiagnosticCode
 	Message          string
 	Peers            []directmanager.TrustedPeer
-	Forwards         []directmanager.RunningForward
 }
 
 func NewDirectController(manager DirectManager) *DirectController {
@@ -105,7 +98,6 @@ func (c *DirectController) Refresh(ctx context.Context) error {
 	c.state.LocalTailscaleIP = ready.LocalTailscaleIP
 	c.state.DiagnosticCode = ready.Code
 	c.state.Peers = copyTrustedPeers(peers)
-	c.state.Forwards = copyRunningForwards(c.forwards)
 	if ready.Ready {
 		c.state.Message = "Tailscale 已就绪"
 	} else {
@@ -166,75 +158,9 @@ func describePairError(address string, err error) error {
 	return err
 }
 
-func (c *DirectController) CreateForward(ctx context.Context, peerID, targetHost string, targetPort int, localAddress string) error {
-	if err := c.requireManager(); err != nil {
-		return err
-	}
-	peerID = strings.TrimSpace(peerID)
-	if peerID == "" {
-		c.state.Message = "请先选择可信设备"
-		return ErrDirectPeerRequired
-	}
-	targetHost = strings.TrimSpace(targetHost)
-	if targetHost == "" {
-		targetHost = "127.0.0.1"
-	}
-	if targetPort <= 0 {
-		c.state.Message = "请输入远端目标端口"
-		return ErrDirectTargetPortRequired
-	}
-	if targetPort > 65535 {
-		c.state.Message = "远端目标端口必须在 1-65535 之间"
-		return ErrDirectTargetPortRequired
-	}
-	localAddress = strings.TrimSpace(localAddress)
-	if localAddress == "" {
-		localAddress = "127.0.0.1:0"
-	}
-
-	fwd, err := c.manager.CreateForward(ctx, directmanager.ForwardRequest{
-		PeerID:       peerID,
-		TargetHost:   targetHost,
-		TargetPort:   targetPort,
-		LocalAddress: localAddress,
-	})
-	if err != nil {
-		c.state.Message = "创建本地转发失败：" + err.Error()
-		return err
-	}
-	c.forwards = upsertRunningForward(c.forwards, fwd)
-	c.state.Forwards = copyRunningForwards(c.forwards)
-	c.state.Message = fmt.Sprintf("已创建转发：%s -> %s", fwd.LocalAddress, fwd.Target)
-	if err := c.Refresh(ctx); err != nil {
-		c.state.Forwards = copyRunningForwards(c.forwards)
-		c.state.Message = fmt.Sprintf("已创建转发：%s -> %s；状态刷新失败：%s", fwd.LocalAddress, fwd.Target, err.Error())
-	}
-	return nil
-}
-
-func (c *DirectController) StopForward(ctx context.Context, id string) error {
-	if err := c.requireManager(); err != nil {
-		return err
-	}
-	id = strings.TrimSpace(id)
-	if id == "" {
-		c.state.Message = "缺少转发 ID"
-		return ErrDirectForwardRequired
-	}
-	if err := c.manager.StopForward(ctx, id); err != nil {
-		c.state.Message = "停止转发失败：" + err.Error()
-		return err
-	}
-	c.forwards = removeRunningForward(c.forwards, id)
-	c.state.Forwards = copyRunningForwards(c.forwards)
-	c.state.Message = "转发已停止"
-	return nil
-}
-
 func (c *DirectController) State() DirectState {
 	state := c.state
 	state.Peers = copyTrustedPeers(state.Peers)
-	state.Forwards = copyRunningForwards(state.Forwards)
 	return state
 }
 
@@ -315,28 +241,4 @@ func displayPeerName(name, id string) string {
 
 func copyTrustedPeers(peers []directmanager.TrustedPeer) []directmanager.TrustedPeer {
 	return append([]directmanager.TrustedPeer(nil), peers...)
-}
-
-func copyRunningForwards(forwards []directmanager.RunningForward) []directmanager.RunningForward {
-	return append([]directmanager.RunningForward(nil), forwards...)
-}
-
-func upsertRunningForward(forwards []directmanager.RunningForward, fwd directmanager.RunningForward) []directmanager.RunningForward {
-	for i := range forwards {
-		if forwards[i].ID == fwd.ID {
-			forwards[i] = fwd
-			return forwards
-		}
-	}
-	return append(forwards, fwd)
-}
-
-func removeRunningForward(forwards []directmanager.RunningForward, id string) []directmanager.RunningForward {
-	for i := 0; i < len(forwards); i++ {
-		if forwards[i].ID == id {
-			forwards = append(forwards[:i], forwards[i+1:]...)
-			i--
-		}
-	}
-	return forwards
 }
