@@ -33,8 +33,11 @@ func (a *App) buildMainWindow() fyne.Window {
 	var clashOptions []string
 	var render func()
 
+	summaryLabel := widget.NewLabel("Tailscale：未检测 · IP - · 未监听")
+	summaryLabel.TextStyle = fyne.TextStyle{Bold: true}
+	summaryLabel.Wrapping = fyne.TextWrapOff
+	summaryLabel.Truncation = fyne.TextTruncateEllipsis
 	statusLabel := widget.NewLabel("Tailscale：未检测")
-	statusLabel.TextStyle = fyne.TextStyle{Bold: true}
 	ipLabel := widget.NewLabel("本机 IP：-")
 	controlLabel := widget.NewLabel("portshare：未启用")
 	bridgeLabel := widget.NewLabel("localhost 桥接：无")
@@ -47,9 +50,12 @@ func (a *App) buildMainWindow() fyne.Window {
 	clashControlLabel := widget.NewLabel("控制接口：未检测")
 	clashResultLabel := widget.NewLabel("出口优化：未应用")
 	messageLabel := widget.NewLabel("准备就绪")
+	messageLabel.Wrapping = fyne.TextWrapOff
+	messageLabel.Truncation = fyne.TextTruncateEllipsis
 	for _, label := range []*widget.Label{statusLabel, ipLabel, controlLabel, bridgeLabel, bridgeConflictLabel, networkPathLabel, networkRouteLabel, bypassLabel, clashTunLabel, clashPortsLabel, clashControlLabel, clashResultLabel, messageLabel} {
 		label.Wrapping = fyne.TextWrapWord
 	}
+	messageLabel.Wrapping = fyne.TextWrapOff
 
 	secretEntry := widget.NewPasswordEntry()
 	secretEntry.SetPlaceHolder("共享密钥")
@@ -226,6 +232,7 @@ func (a *App) buildMainWindow() fyne.Window {
 		clashPortsLabel.SetText(clashProxyPortsText(state))
 		clashControlLabel.SetText(clashControlText(state))
 		clashResultLabel.SetText(clashApplyResultText(state))
+		summaryLabel.SetText(compactStatusSummaryText(state))
 
 		options := egressCandidateOptions(state.NetworkPath.Candidates)
 		candidateOptions = options
@@ -265,8 +272,8 @@ func (a *App) buildMainWindow() fyne.Window {
 	}
 	a.refreshUI = render
 
-	statusBand := container.NewVBox(statusLabel, ipLabel, controlLabel, bridgeLabel, bridgeConflictLabel, networkPathLabel, networkRouteLabel, bypassLabel, clashTunLabel, clashPortsLabel, clashControlLabel, clashResultLabel, messageLabel)
-	setupPanel := container.NewVBox(
+	statusBand := container.NewVBox(summaryLabel, messageLabel)
+	connectionPage := scrollPage(container.NewVBox(
 		widget.NewLabel("直连密钥"),
 		secretEntry,
 		startButton,
@@ -275,20 +282,44 @@ func (a *App) buildMainWindow() fyne.Window {
 		widget.NewLabel("配对"),
 		peerEntry,
 		pairButton,
-		widget.NewSeparator(),
+	))
+	networkPage := scrollPage(container.NewVBox(
 		widget.NewLabel("网络路径"),
+		networkPathLabel,
+		networkRouteLabel,
+		bypassLabel,
 		detectNetworkButton,
 		candidateSelect,
 		applyBypassButton,
 		clearBypassButton,
-		widget.NewSeparator(),
+	))
+	egressPage := scrollPage(container.NewVBox(
 		widget.NewLabel("出口优化"),
+		clashResultLabel,
+		clashTunLabel,
+		clashPortsLabel,
+		clashControlLabel,
 		detectClashButton,
 		refreshClashNodesButton,
 		clashNodeSelect,
 		applyClashNodeButton,
 		restoreClashNodeButton,
+	))
+	statusPage := scrollPage(container.NewVBox(
+		widget.NewLabel("运行状态"),
+		statusLabel,
+		ipLabel,
+		controlLabel,
+		bridgeLabel,
+		bridgeConflictLabel,
+	))
+	setupPanel := container.NewAppTabs(
+		container.NewTabItem("连接", connectionPage),
+		container.NewTabItem("网络", networkPage),
+		container.NewTabItem("出口", egressPage),
+		container.NewTabItem("状态", statusPage),
 	)
+	setupPanel.SetTabLocation(container.TabLocationTop)
 	peerPanel := container.NewBorder(
 		container.NewVBox(widget.NewLabel("可信设备")),
 		nil,
@@ -302,6 +333,38 @@ func (a *App) buildMainWindow() fyne.Window {
 	w.SetContent(container.NewBorder(statusBand, nil, nil, nil, main))
 	render()
 	return w
+}
+
+func scrollPage(content fyne.CanvasObject) *container.Scroll {
+	scroll := container.NewScroll(content)
+	scroll.SetMinSize(fyne.NewSize(300, 220))
+	return scroll
+}
+
+func compactStatusSummaryText(state DirectState) string {
+	parts := make([]string, 0, 4)
+	if state.Ready {
+		parts = append(parts, "Tailscale：ready")
+	} else {
+		parts = append(parts, "Tailscale：未就绪")
+	}
+	parts = append(parts, "IP "+valueOrDash(state.LocalTailscaleIP))
+	if state.ControlListening {
+		parts = append(parts, "监听中")
+	} else {
+		parts = append(parts, "未监听")
+	}
+	if state.ClashApplyResult.NodeName != "" {
+		egress := "出口 " + state.ClashApplyResult.NodeName
+		if state.ClashApplyResult.RouteType != "" {
+			egress += " " + state.ClashApplyResult.RouteType
+		}
+		if state.ClashApplyResult.Latency != "" {
+			egress += " " + state.ClashApplyResult.Latency
+		}
+		parts = append(parts, egress)
+	}
+	return strings.Join(parts, " · ")
 }
 
 const pairingSecretAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"

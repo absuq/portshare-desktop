@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/widget"
+
 	"github.com/absuq/portshare-desktop/internal/clash"
 	directmanager "github.com/absuq/portshare-desktop/internal/direct/manager"
 	"github.com/absuq/portshare-desktop/internal/direct/store"
@@ -555,6 +558,41 @@ func TestPairSuccessDialogMessageFallsBack(t *testing.T) {
 	state := DirectState{Message: "Tailscale 已就绪"}
 	if got := pairSuccessDialogMessage(state); got != "配对成功，已授权对方 Tailscale IP 访问本机全端口。" {
 		t.Fatalf("expected fallback success message, got %q", got)
+	}
+}
+
+func TestCompactStatusSummaryTextKeepsTopBarShort(t *testing.T) {
+	state := DirectState{
+		Ready:            true,
+		LocalTailscaleIP: "100.79.83.104",
+		ControlListening: true,
+		ControlAddress:   "100.79.83.104:17890",
+		HasActiveBypass:  true,
+		ActiveBypass:     netdiag.ActiveBypass{EndpointIP: "115.233.222.82", NextHop: "192.168.1.1"},
+		ClashApplyResult: clash.ApplyResult{NodeName: "上海 01", RouteType: "direct", Latency: "25ms"},
+	}
+
+	got := compactStatusSummaryText(state)
+	for _, verbose := range []string{"localhost", "代理入口", "控制接口", "endpoint"} {
+		if strings.Contains(got, verbose) {
+			t.Fatalf("top summary should not include verbose diagnostics %q: %q", verbose, got)
+		}
+	}
+	for _, want := range []string{"Tailscale：ready", "IP 100.79.83.104", "监听中", "出口 上海 01 direct 25ms"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("top summary missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestScrollPageAllowsBothAxisOverflowInsideTabs(t *testing.T) {
+	page := scrollPage(widget.NewLabel(strings.Repeat("very-long-node-name-", 20)))
+
+	if page.Direction != container.ScrollBoth {
+		t.Fatalf("expected tab page to contain both vertical and horizontal overflow, got %v", page.Direction)
+	}
+	if page.MinSize().Width > 320 {
+		t.Fatalf("scroll page min width should stay compact, got %v", page.MinSize())
 	}
 }
 
