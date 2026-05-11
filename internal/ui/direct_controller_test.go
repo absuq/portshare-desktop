@@ -599,6 +599,24 @@ func TestCompactStatusSummaryTextKeepsTopBarShort(t *testing.T) {
 	}
 }
 
+func TestActiveBypassStatusTextShowsIPv6HostRoute(t *testing.T) {
+	state := DirectState{
+		HasActiveBypass: true,
+		ActiveBypass: netdiag.ActiveBypass{
+			EndpointIP:    "2401:b60:1b::1033",
+			AddressFamily: netdiag.AddressFamilyIPv6,
+			NextHop:       "fe80::1",
+		},
+	}
+
+	got := activeBypassStatusText(state)
+	for _, want := range []string{"IPv6", "2401:b60:1b::1033/128", "fe80::1"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected active bypass text to contain %q, got %q", want, got)
+		}
+	}
+}
+
 func TestScrollPageAllowsBothAxisOverflowInsideTabs(t *testing.T) {
 	page := scrollPage(widget.NewLabel(strings.Repeat("very-long-node-name-", 20)))
 
@@ -714,6 +732,25 @@ func TestEgressCandidateOptionsShowPublicMappingFirst(t *testing.T) {
 	}
 	if !strings.Contains(options[0], "公网 112.10.189.69:1142") || !strings.Contains(options[0], "本机 192.168.1.11") {
 		t.Fatalf("expected option to show public mapping and local IP, got %q", options[0])
+	}
+}
+
+func TestEgressCandidateOptionsShowIPv6FamilyAndPublicMapping(t *testing.T) {
+	options := egressCandidateOptions([]netdiag.EgressCandidate{{
+		InterfaceAlias: "以太网",
+		AddressFamily:  netdiag.AddressFamilyIPv6,
+		InterfaceIP:    "2409:8a28:127d:e2f0:e431:c739:7833:d9b5",
+		NextHop:        "fe80::1",
+		PublicIPv6:     "[2409:8a28:127d:e2f0::100]:41641",
+		Recommended:    true,
+	}})
+	if len(options) != 1 {
+		t.Fatalf("expected one option, got %+v", options)
+	}
+	for _, want := range []string{"IPv6", "公网IPv6 [2409:8a28:127d:e2f0::100]:41641", "本机 2409:8a28:127d:e2f0:e431:c739:7833:d9b5", "推荐"} {
+		if !strings.Contains(options[0], want) {
+			t.Fatalf("expected option to contain %q, got %q", want, options[0])
+		}
 	}
 }
 

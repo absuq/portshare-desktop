@@ -41,6 +41,39 @@ func TestApplyBypassAddsActiveStoreHostRoute(t *testing.T) {
 	}
 }
 
+func TestApplyBypassAddsActiveStoreIPv6HostRoute(t *testing.T) {
+	runner := &recordingRunner{outputs: map[string][]byte{
+		"New-NetRoute":                   []byte(""),
+		"tailscale debug restun":         []byte(""),
+		"tailscale ping --c 10":          []byte("pong from desktop via [2401:b60:1b::1033]:13674 in 25ms"),
+		"Find-NetRoute -RemoteIPAddress": []byte(`{"InterfaceAlias":"以太网","InterfaceIndex":15,"NextHop":"fe80::1","IPAddress":"2409:8a28:127d:e2f0:e431:c739:7833:d9b5","AddressFamily":"IPv6"}`),
+	}}
+	service := NewService(runner)
+
+	active, err := service.ApplyBypass(context.Background(), BypassRequest{
+		PeerTailscaleIP: "100.109.251.97",
+		EndpointIP:      "2401:b60:1b::1033",
+		Candidate: EgressCandidate{
+			AddressFamily:  AddressFamilyIPv6,
+			InterfaceIndex: 15,
+			NextHop:        "fe80::1",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if active.EndpointIP != "2401:b60:1b::1033" || active.AddressFamily != AddressFamilyIPv6 {
+		t.Fatalf("unexpected active bypass: %+v", active)
+	}
+	command := strings.Join(runner.commands, "\n")
+	for _, want := range []string{"New-NetRoute", "2401:b60:1b::1033/128", "-InterfaceIndex 15", "-NextHop 'fe80::1'", "-PolicyStore ActiveStore"} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("expected command to contain %q, got %s", want, command)
+		}
+	}
+}
+
 func TestApplyBypassRollsBackWhenRouteFallsBackToDERP(t *testing.T) {
 	runner := &recordingRunner{outputs: map[string][]byte{
 		"New-NetRoute":           []byte(""),

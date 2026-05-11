@@ -514,13 +514,21 @@ func activeBypassStatusText(state DirectState) string {
 	if !state.HasActiveBypass {
 		return "临时路由：未启用"
 	}
-	return "临时路由：" + state.ActiveBypass.EndpointIP + " -> " + state.ActiveBypass.NextHop
+	family := state.ActiveBypass.AddressFamily
+	if family == "" {
+		family = addressFamilyLabel(state.ActiveBypass.EndpointIP)
+	}
+	return "临时路由：" + family + " " + hostRoutePrefix(state.ActiveBypass.EndpointIP, family) + " -> " + state.ActiveBypass.NextHop
 }
 
 func egressCandidateOptions(candidates []netdiag.EgressCandidate) []string {
 	options := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
-		label := candidate.InterfaceAlias + " -> " + candidate.NextHop
+		label := candidate.InterfaceAlias
+		if candidate.AddressFamily != "" {
+			label += " " + candidate.AddressFamily
+		}
+		label += " -> " + candidate.NextHop
 		details := []string{}
 		if candidate.PublicIPv4 != "" {
 			details = append(details, "公网 "+candidate.PublicIPv4)
@@ -546,6 +554,20 @@ func egressCandidateOptions(candidates []netdiag.EgressCandidate) []string {
 		options = append(options, label)
 	}
 	return options
+}
+
+func addressFamilyLabel(ip string) string {
+	if strings.Contains(ip, ":") {
+		return netdiag.AddressFamilyIPv6
+	}
+	return netdiag.AddressFamilyIPv4
+}
+
+func hostRoutePrefix(ip string, family string) string {
+	if family == netdiag.AddressFamilyIPv6 || strings.Contains(ip, ":") {
+		return ip + "/128"
+	}
+	return ip + "/32"
 }
 
 func recommendedCandidateIndex(candidates []netdiag.EgressCandidate) int {

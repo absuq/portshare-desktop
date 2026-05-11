@@ -19,6 +19,11 @@ const (
 	RoutePeerRelay = "peer-relay"
 )
 
+const (
+	AddressFamilyIPv4 = "IPv4"
+	AddressFamilyIPv6 = "IPv6"
+)
+
 type PeerPathReport struct {
 	PeerTailscaleIP string
 	Status          PathStatus
@@ -36,6 +41,7 @@ type RouteInfo struct {
 	InterfaceIndex int
 	NextHop        string
 	IPAddress      string
+	AddressFamily  string
 }
 
 type EgressCandidate struct {
@@ -43,6 +49,7 @@ type EgressCandidate struct {
 	InterfaceIndex  int
 	InterfaceIP     string
 	NextHop         string
+	AddressFamily   string
 	PublicIPv4      string
 	PublicIPv6      string
 	UDP             bool
@@ -62,6 +69,7 @@ type BypassRequest struct {
 type ActiveBypass struct {
 	PeerTailscaleIP string
 	EndpointIP      string
+	AddressFamily   string
 	InterfaceIndex  int
 	NextHop         string
 	CreatedAt       time.Time

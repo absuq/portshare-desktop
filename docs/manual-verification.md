@@ -113,6 +113,58 @@ localhost 冲突：3000 原生监听，未桥接
 
 访问的是原生 `0.0.0.0:3000` 服务，不是 `127.0.0.1:3000` 服务。
 
+## 网络路径与延迟优化验证
+
+目标是区分两层状态：
+
+- 内层：两台电脑的 Tailscale 100.x 地址是否 `direct`。
+- 外层：Tailscale direct 使用的公网 endpoint 实际从哪个网卡和地区出去。
+
+验收步骤：
+
+1. 在 portshare 中选择可信设备，点击“检测网络路径”。
+2. 如果显示 `直连但疑似代理绕路`，查看“当前出口”是否为 `Meta`、`Clash`、`Mihomo`、`TUN` 等虚拟网卡。
+3. 查看候选公网出口，确认同时能看到 IPv4 和 IPv6 默认出口。IPv6 endpoint 应显示为 `/128` 主机路由，IPv4 endpoint 应显示为 `/32` 主机路由。
+4. 选择与当前 endpoint 地址族一致的物理网卡出口，例如：
+
+   ```text
+   以太网 IPv6 -> fe80::1
+   以太网 IPv4 -> 192.168.1.1
+   ```
+
+5. 点击“临时绕过代理”，确认 UI 显示类似：
+
+   ```text
+   临时路由：IPv6 2401:b60:1b::1033/128 -> fe80::1
+   ```
+
+   或：
+
+   ```text
+   临时路由：IPv4 115.233.222.82/32 -> 192.168.1.1
+   ```
+
+6. 再次点击“检测网络路径”，确认当前出口变为物理网卡，或延迟下降。
+7. 如果延迟变高、变 DERP，或 endpoint 变化，点击“撤销绕过”，重新检测后再选择新的 endpoint 对应出口。
+
+辅助命令：
+
+```powershell
+tailscale status
+tailscale ping --c 10 <peer-tailscale-ip>
+tailscale netcheck
+Find-NetRoute -RemoteIPAddress <tailscale-direct-endpoint-ip>
+Get-NetRoute -DestinationPrefix '0.0.0.0/0','::/0'
+```
+
+经验记录：
+
+- `tailscale status` 显示 `direct` 只说明内层没有走 DERP；它不保证外层公网路径足够近。
+- 如果 `tailscale netcheck` 看到的公网 IP 在香港，而物理宽带应在浙江/上海附近，通常说明 Tailscale 外层打洞流量被代理/TUN 接管。
+- Clash/Mihomo 的 `PROCESS-NAME,tailscaled.exe,DIRECT` 在 TUN 模式下可能不可靠，因为连接元数据里的进程名可能为空。
+- MagicDNS 被 fake-ip 影响时，`Resolve-DnsName <peer>.ts.net -Server 100.100.100.100` 能返回正确 100.x，而默认 DNS 可能返回 198.18.x。
+- 最小影响的优化手段不是改默认路由，也不是关闭代理，而是只给当前 Tailscale direct endpoint 添加临时主机路由。
+
 ## 关闭验证
 
 1. 在电脑 B 退出 `portshare`。

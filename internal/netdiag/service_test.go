@@ -71,6 +71,50 @@ func TestDiagnosePeerReportsDirectProxyRoute(t *testing.T) {
 	}
 }
 
+func TestDiagnosePeerReportsIPv6DirectProxyRoute(t *testing.T) {
+	runner := &recordingRunner{outputs: map[string][]byte{
+		"tailscale ping --c 10 100.109.251.97": []byte("pong from desktop via [2401:b60:1b::1033]:13674 in 136ms"),
+		"Find-NetRoute": []byte(`{
+			"InterfaceAlias":"Meta",
+			"InterfaceIndex":19,
+			"NextHop":"fdfe:dcba:9876::2",
+			"RouteMetric":0,
+			"InterfaceMetric":0,
+			"IPAddress":"fdfe:dcba:9876::1",
+			"AddressFamily":"IPv6"
+		}`),
+		"Get-NetRoute -DestinationPrefix": []byte(`[
+			{"InterfaceAlias":"Meta","InterfaceIndex":19,"NextHop":"198.18.0.2","RouteMetric":0,"InterfaceMetric":0,"InterfaceIP":"198.18.0.1","AddressFamily":"IPv4"},
+			{"InterfaceAlias":"以太网","InterfaceIndex":15,"NextHop":"192.168.1.1","RouteMetric":0,"InterfaceMetric":25,"InterfaceIP":"192.168.1.11","AddressFamily":"IPv4"},
+			{"InterfaceAlias":"Meta","InterfaceIndex":19,"NextHop":"fdfe:dcba:9876::2","RouteMetric":0,"InterfaceMetric":0,"InterfaceIP":"fdfe:dcba:9876::1","AddressFamily":"IPv6"},
+			{"InterfaceAlias":"以太网","InterfaceIndex":15,"NextHop":"fe80::1","RouteMetric":256,"InterfaceMetric":25,"InterfaceIP":"2409:8a28:127d:e2f0:e431:c739:7833:d9b5","AddressFamily":"IPv6"}
+		]`),
+		"tailscale netcheck --format json --bind-address 198.18.0.1":                              []byte(`{"UDP":true,"GlobalV4":"157.254.20.171:6223","GlobalV6":""}`),
+		"tailscale netcheck --format json --bind-address 192.168.1.11":                            []byte(`{"UDP":true,"GlobalV4":"112.10.189.69:1142","GlobalV6":""}`),
+		"tailscale netcheck --format json --bind-address fdfe:dcba:9876::1":                       []byte(`{"UDP":true,"GlobalV4":"","GlobalV6":"[2401:b60:1b::1017]:18585"}`),
+		"tailscale netcheck --format json --bind-address 2409:8a28:127d:e2f0:e431:c739:7833:d9b5": []byte(`{"UDP":true,"GlobalV4":"","GlobalV6":"[2409:8a28:127d:e2f0::100]:41641"}`),
+	}}
+	service := NewService(runner)
+
+	report, err := service.DiagnosePeer(context.Background(), "100.109.251.97")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if report.EndpointIP != "2401:b60:1b::1033" || report.CurrentRoute.AddressFamily != AddressFamilyIPv6 {
+		t.Fatalf("unexpected IPv6 endpoint report: %+v", report)
+	}
+	if report.Status != PathDirectProxy {
+		t.Fatalf("expected IPv6 direct proxy path, got %+v", report)
+	}
+	if len(report.Candidates) != 4 {
+		t.Fatalf("expected four candidates, got %+v", report.Candidates)
+	}
+	if report.Candidates[0].InterfaceAlias != "以太网" || report.Candidates[0].AddressFamily != AddressFamilyIPv6 || !report.Candidates[0].Recommended {
+		t.Fatalf("expected physical IPv6 candidate to be recommended first, got %+v", report.Candidates)
+	}
+}
+
 func TestDiagnosePeerReportsDERPAndStillListsEgressCandidates(t *testing.T) {
 	runner := &recordingRunner{outputs: map[string][]byte{
 		"tailscale ping --c 10 100.109.251.97": []byte("pong from desktop via DERP(hkg) in 43ms"),

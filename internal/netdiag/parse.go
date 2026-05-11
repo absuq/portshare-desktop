@@ -37,7 +37,7 @@ func EndpointIP(endpoint string) string {
 	if ipv4 := ip.To4(); ipv4 != nil {
 		return ipv4.String()
 	}
-	return ""
+	return ip.String()
 }
 
 func IsPublicIPv4(value string) bool {
@@ -54,6 +54,38 @@ func IsPublicIPv4(value string) bool {
 		return false
 	}
 	if first == 198 && (second == 18 || second == 19) {
+		return false
+	}
+	return true
+}
+
+func IsPublicEndpointIP(value string) bool {
+	ip := net.ParseIP(strings.TrimSpace(value))
+	if ip == nil {
+		return false
+	}
+	if ip.To4() != nil {
+		return IsPublicIPv4(value)
+	}
+	return isPublicIPv6(ip)
+}
+
+func endpointAddressFamily(value string) string {
+	ip := net.ParseIP(strings.TrimSpace(value))
+	if ip == nil {
+		return ""
+	}
+	if ip.To4() != nil {
+		return AddressFamilyIPv4
+	}
+	return AddressFamilyIPv6
+}
+
+func isPublicIPv6(ip net.IP) bool {
+	if ip == nil || ip.To4() != nil {
+		return false
+	}
+	if ip.IsUnspecified() || ip.IsLoopback() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsPrivate() {
 		return false
 	}
 	return true

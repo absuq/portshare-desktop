@@ -45,7 +45,7 @@ func (s *Service) DiagnosePeer(ctx context.Context, peerTailscaleIP string) (Pee
 	report.Endpoint = endpoint
 	report.EndpointIP = EndpointIP(endpoint)
 	report.Latency = latency
-	candidates, candidatesErr := s.egressCandidates(ctx)
+	candidates, candidatesErr := s.egressCandidates(ctx, report.EndpointIP)
 
 	if routeType != RouteDirect {
 		report.Status = ClassifyPath(routeType, latency, RouteInfo{})
@@ -85,6 +85,7 @@ func (s *Service) ApplyBypass(ctx context.Context, request BypassRequest) (Activ
 	active := ActiveBypass{
 		PeerTailscaleIP: request.PeerTailscaleIP,
 		EndpointIP:      request.EndpointIP,
+		AddressFamily:   endpointAddressFamily(request.EndpointIP),
 		InterfaceIndex:  request.Candidate.InterfaceIndex,
 		NextHop:         request.Candidate.NextHop,
 		CreatedAt:       time.Now().UTC(),
@@ -122,7 +123,7 @@ func (s *Service) currentRoute(ctx context.Context, endpointIP string) (RouteInf
 	return routes[0], nil
 }
 
-func (s *Service) egressCandidates(ctx context.Context) ([]EgressCandidate, error) {
+func (s *Service) egressCandidates(ctx context.Context, endpointIP string) ([]EgressCandidate, error) {
 	raw, err := s.runPowerShell(ctx, defaultRoutesScript())
 	if err != nil {
 		return nil, err
@@ -132,7 +133,7 @@ func (s *Service) egressCandidates(ctx context.Context) ([]EgressCandidate, erro
 		return nil, err
 	}
 	s.enrichCandidatePublicMappings(ctx, candidates)
-	return rankEgressCandidates(candidates), nil
+	return rankEgressCandidates(candidates, endpointIP), nil
 }
 
 func (s *Service) runPowerShell(ctx context.Context, script string) ([]byte, error) {
@@ -212,22 +213,28 @@ func (s *Service) verifyBypass(ctx context.Context, request BypassRequest) error
 }
 
 func findRouteScript(endpointIP string) string {
-	return fmt.Sprintf("Find-NetRoute -RemoteIPAddress '%s' | Select-Object -First 1 InterfaceAlias,InterfaceIndex,NextHop,RouteMetric,InterfaceMetric,IPAddress | ConvertTo-Json -Compress", endpointIP)
+	return fmt.Sprintf("Find-NetRoute -RemoteIPAddress '%s' | Select-Object -First 1 InterfaceAlias,InterfaceIndex,NextHop,RouteMetric,InterfaceMetric,IPAddress,@{Name='AddressFamily';Expression={if ('%s' -like '*:*') {'IPv6'} else {'IPv4'}}} | ConvertTo-Json -Compress", endpointIP, endpointIP)
 }
 
 func defaultRoutesScript() string {
-	return "$routes = Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' }; " +
-		"$routes | ForEach-Object { " +
+	return "$items = @(); " +
+		"$items += Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' } | ForEach-Object { " +
 		"$iface = Get-NetIPInterface -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1; " +
 		"$ip = Get-NetIPAddress -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254*' } | Select-Object -First 1; " +
-		"[pscustomobject]@{InterfaceAlias=$_.InterfaceAlias;InterfaceIndex=$_.InterfaceIndex;NextHop=$_.NextHop;RouteMetric=$_.RouteMetric;InterfaceMetric=$iface.InterfaceMetric;InterfaceIP=$ip.IPAddress} " +
-		"} | ConvertTo-Json -Compress"
+		"[pscustomobject]@{AddressFamily='IPv4';InterfaceAlias=$_.InterfaceAlias;InterfaceIndex=$_.InterfaceIndex;NextHop=$_.NextHop;RouteMetric=$_.RouteMetric;InterfaceMetric=$iface.InterfaceMetric;InterfaceIP=$ip.IPAddress} " +
+		"}; " +
+		"$items += Get-NetRoute -DestinationPrefix '::/0' -ErrorAction SilentlyContinue | Where-Object { $_.NextHop -and $_.NextHop -ne '::' } | ForEach-Object { " +
+		"$iface = Get-NetIPInterface -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue | Select-Object -First 1; " +
+		"$ip = Get-NetIPAddress -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike 'fe80*' -and $_.AddressState -eq 'Preferred' } | Select-Object -First 1; " +
+		"[pscustomobject]@{AddressFamily='IPv6';InterfaceAlias=$_.InterfaceAlias;InterfaceIndex=$_.InterfaceIndex;NextHop=$_.NextHop;RouteMetric=$_.RouteMetric;InterfaceMetric=$iface.InterfaceMetric;InterfaceIP=$ip.IPAddress} " +
+		"}; " +
+		"$items | ConvertTo-Json -Compress"
 }
 
 func newRouteScript(request BypassRequest) string {
 	return fmt.Sprintf(
-		"New-NetRoute -DestinationPrefix '%s/32' -InterfaceIndex %d -NextHop '%s' -PolicyStore ActiveStore",
-		request.EndpointIP,
+		"New-NetRoute -DestinationPrefix '%s' -InterfaceIndex %d -NextHop '%s' -PolicyStore ActiveStore",
+		destinationPrefix(request.EndpointIP),
 		request.Candidate.InterfaceIndex,
 		request.Candidate.NextHop,
 	)
@@ -235,8 +242,8 @@ func newRouteScript(request BypassRequest) string {
 
 func removeRouteScript(bypass ActiveBypass) string {
 	return fmt.Sprintf(
-		"Remove-NetRoute -DestinationPrefix '%s/32' -InterfaceIndex %d -NextHop '%s' -Confirm:$false",
-		bypass.EndpointIP,
+		"Remove-NetRoute -DestinationPrefix '%s' -InterfaceIndex %d -NextHop '%s' -Confirm:$false",
+		destinationPrefix(bypass.EndpointIP),
 		bypass.InterfaceIndex,
 		bypass.NextHop,
 	)
@@ -248,6 +255,7 @@ func parseRouteInfos(raw []byte) ([]RouteInfo, error) {
 		InterfaceIndex int    `json:"InterfaceIndex"`
 		NextHop        string `json:"NextHop"`
 		IPAddress      string `json:"IPAddress"`
+		AddressFamily  string `json:"AddressFamily"`
 	}
 	if err := unmarshalOneOrMany(raw, &payload); err != nil {
 		return nil, err
@@ -259,6 +267,7 @@ func parseRouteInfos(raw []byte) ([]RouteInfo, error) {
 			InterfaceIndex: item.InterfaceIndex,
 			NextHop:        item.NextHop,
 			IPAddress:      item.IPAddress,
+			AddressFamily:  normalizedAddressFamily(item.AddressFamily, item.NextHop, item.IPAddress),
 		})
 	}
 	return routes, nil
@@ -270,6 +279,7 @@ func parseEgressCandidates(raw []byte) ([]EgressCandidate, error) {
 		InterfaceIndex  int    `json:"InterfaceIndex"`
 		InterfaceIP     string `json:"InterfaceIP"`
 		NextHop         string `json:"NextHop"`
+		AddressFamily   string `json:"AddressFamily"`
 		RouteMetric     int    `json:"RouteMetric"`
 		InterfaceMetric int    `json:"InterfaceMetric"`
 	}
@@ -283,14 +293,16 @@ func parseEgressCandidates(raw []byte) ([]EgressCandidate, error) {
 			continue
 		}
 		nextHop := strings.TrimSpace(item.NextHop)
-		if nextHop == "" || nextHop == "0.0.0.0" {
+		if nextHop == "" || nextHop == "0.0.0.0" || nextHop == "::" {
 			continue
 		}
+		addressFamily := normalizedAddressFamily(item.AddressFamily, nextHop, item.InterfaceIP)
 		candidates = append(candidates, EgressCandidate{
 			InterfaceAlias:  alias,
 			InterfaceIndex:  item.InterfaceIndex,
 			InterfaceIP:     item.InterfaceIP,
 			NextHop:         nextHop,
+			AddressFamily:   addressFamily,
 			RouteMetric:     item.RouteMetric,
 			InterfaceMetric: item.InterfaceMetric,
 			SuspectedProxy:  IsSuspectedProxyInterface(alias),
@@ -299,9 +311,13 @@ func parseEgressCandidates(raw []byte) ([]EgressCandidate, error) {
 	return candidates, nil
 }
 
-func rankEgressCandidates(candidates []EgressCandidate) []EgressCandidate {
+func rankEgressCandidates(candidates []EgressCandidate, endpointIP string) []EgressCandidate {
 	ranked := append([]EgressCandidate(nil), candidates...)
+	endpointFamily := endpointAddressFamily(endpointIP)
 	sort.SliceStable(ranked, func(i, j int) bool {
+		if endpointFamily != "" && ranked[i].AddressFamily != ranked[j].AddressFamily {
+			return ranked[i].AddressFamily == endpointFamily
+		}
 		if ranked[i].SuspectedProxy != ranked[j].SuspectedProxy {
 			return !ranked[i].SuspectedProxy
 		}
@@ -316,6 +332,9 @@ func rankEgressCandidates(candidates []EgressCandidate) []EgressCandidate {
 		ranked[i].Recommended = false
 	}
 	for i := range ranked {
+		if endpointFamily != "" && ranked[i].AddressFamily != endpointFamily {
+			continue
+		}
 		if !ranked[i].SuspectedProxy {
 			ranked[i].Recommended = true
 			break
@@ -356,8 +375,8 @@ func pathStatusMessage(status PathStatus) string {
 }
 
 func validateBypassRequest(request BypassRequest) error {
-	if !IsPublicIPv4(request.EndpointIP) {
-		return fmt.Errorf("endpoint IP 不是可绕过的公网 IPv4：%s", request.EndpointIP)
+	if !IsPublicEndpointIP(request.EndpointIP) {
+		return fmt.Errorf("endpoint IP 不是可绕过的公网地址：%s", request.EndpointIP)
 	}
 	if request.Candidate.InterfaceIndex <= 0 {
 		return fmt.Errorf("缺少公网出口接口")
@@ -365,12 +384,16 @@ func validateBypassRequest(request BypassRequest) error {
 	if strings.TrimSpace(request.Candidate.NextHop) == "" {
 		return fmt.Errorf("缺少公网出口网关")
 	}
+	endpointFamily := endpointAddressFamily(request.EndpointIP)
+	if request.Candidate.AddressFamily != "" && request.Candidate.AddressFamily != endpointFamily {
+		return fmt.Errorf("公网出口地址族不匹配，endpoint 为 %s，出口为 %s", endpointFamily, request.Candidate.AddressFamily)
+	}
 	return nil
 }
 
 func validateActiveBypass(bypass ActiveBypass) error {
-	if !IsPublicIPv4(bypass.EndpointIP) {
-		return fmt.Errorf("endpoint IP 不是可撤销的公网 IPv4：%s", bypass.EndpointIP)
+	if !IsPublicEndpointIP(bypass.EndpointIP) {
+		return fmt.Errorf("endpoint IP 不是可撤销的公网地址：%s", bypass.EndpointIP)
 	}
 	if bypass.InterfaceIndex <= 0 {
 		return fmt.Errorf("缺少要撤销的接口")
@@ -379,4 +402,24 @@ func validateActiveBypass(bypass ActiveBypass) error {
 		return fmt.Errorf("缺少要撤销的网关")
 	}
 	return nil
+}
+
+func normalizedAddressFamily(values ...string) string {
+	for _, value := range values {
+		family := strings.TrimSpace(value)
+		if family == AddressFamilyIPv4 || family == AddressFamilyIPv6 {
+			return family
+		}
+		if detected := endpointAddressFamily(family); detected != "" {
+			return detected
+		}
+	}
+	return ""
+}
+
+func destinationPrefix(endpointIP string) string {
+	if endpointAddressFamily(endpointIP) == AddressFamilyIPv6 {
+		return endpointIP + "/128"
+	}
+	return endpointIP + "/32"
 }

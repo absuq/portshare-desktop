@@ -12,7 +12,7 @@
 - 检测本机可用公网出口，至少列出物理网卡、网关、接口名称、接口 IP、接口 metric。
 - 检测当前到 Tailscale 对端公网 endpoint 的实际路由，显示正在使用的接口。
 - 当发现当前路由走 `Meta`、`Clash`、`Mihomo`、`Vortex`、`TUN` 等疑似代理接口时，提示用户可选择物理网卡临时绕过。
-- 用户选择出口后，只对 Tailscale 对端公网 IP 添加 `/32` 临时主机路由，例如 `115.233.222.82/32 -> 192.168.1.1`。
+- 用户选择出口后，只对 Tailscale 对端公网 endpoint 添加临时主机路由：IPv4 使用 `/32`，IPv6 使用 `/128`，例如 `115.233.222.82/32 -> 192.168.1.1` 或 `2401:b60:1b::1033/128 -> fe80::1`。
 - 支持撤销 portshare 添加的临时绕过路由。
 - 保持全程需要用户明确点击确认，不自动改路由。
 
@@ -38,7 +38,7 @@
 
 - `检测网络路径`：运行诊断并刷新显示。
 - `选择公网出口`：列出候选出口。
-- `临时绕过代理`：对当前对端 endpoint IP 添加临时 `/32` 路由。
+- `临时绕过代理`：对当前对端 endpoint 添加临时 IPv4 `/32` 或 IPv6 `/128` 路由。
 - `撤销绕过`：删除 portshare 添加的临时路由。
 
 候选出口列表只展示默认路由或可达公网的非 Tailscale 接口，并标注疑似代理接口。物理网卡优先展示，代理/TUN 接口作为当前诊断信息展示，不推荐作为绕过目标。
@@ -51,39 +51,42 @@
 
 - 本机 Tailscale 状态：`tailscale status --json`。
 - 对端 Tailscale IP：来自可信设备列表。
-- Tailscale 路径：`tailscale ping --until-direct=false --c 3 <peer>`。
+- Tailscale 路径：`tailscale ping --c 10 <peer>`。
 - 当前路由：PowerShell `Find-NetRoute -RemoteIPAddress <endpoint-ip>`。
-- 默认出口候选：`Get-NetRoute -DestinationPrefix 0.0.0.0/0`、`Get-NetIPInterface`、`Get-NetIPAddress`、`Get-NetAdapter`。
+- 默认出口候选：`Get-NetRoute -DestinationPrefix 0.0.0.0/0`、`Get-NetRoute -DestinationPrefix ::/0`、`Get-NetIPInterface`、`Get-NetIPAddress`、`Get-NetAdapter`。
 
 路径判断：
 
 - `tailscale ping` 返回 `via DERP(...)`：状态为 DERP 中继。
-- `tailscale ping` 返回公网 `ip:port`：状态为直连。
+- `tailscale ping` 返回公网 `ip:port` 或 `[ipv6]:port`：状态为直连。
 - 直连延迟高于阈值，且 `Find-NetRoute` 显示出口接口名匹配疑似代理/TUN：状态为直连但疑似代理绕路。
 - 默认高延迟阈值为 `120ms`，仅用于提示，不阻止用户手动选择出口。
 
 候选公网出口：
 
-- 必须有 IPv4 默认路由和下一跳网关。
+- 必须有 IPv4 或 IPv6 默认路由和下一跳网关。
 - 排除 Tailscale 接口。
 - 排除 Loopback。
 - 标记疑似代理接口，但不默认推荐。
-- 按物理接口优先、metric 从低到高排序。
+- 按与当前 endpoint 地址族匹配、物理接口优先、metric 从低到高排序。
 
 ## 临时绕过逻辑
 
 当用户选择出口并确认后，portshare 执行：
 
-- 解析当前 peer 的 Tailscale 直连 endpoint IP，例如 `115.233.222.82`。
+- 解析当前 peer 的 Tailscale 直连 endpoint IP，例如 `115.233.222.82` 或 `2401:b60:1b::1033`。
 - 使用选中的网关和接口添加临时主机路由：
   - `New-NetRoute -DestinationPrefix 115.233.222.82/32 -InterfaceIndex <index> -NextHop <gateway> -PolicyStore ActiveStore`
+- 如果 endpoint 是 IPv6，则使用：
+  - `New-NetRoute -DestinationPrefix 2401:b60:1b::1033/128 -InterfaceIndex <index> -NextHop <gateway> -PolicyStore ActiveStore`
 - 记录这条路由到本地运行时状态，包含 peer Tailscale IP、endpoint IP、interface index、gateway、创建时间。
 - 重新运行 `tailscale ping` 与 `Find-NetRoute`，刷新 UI。
 
 撤销时执行：
 
 - 删除 portshare 记录的匹配路由：
-  - `Remove-NetRoute -DestinationPrefix <endpoint>/32 -InterfaceIndex <index> -NextHop <gateway> -Confirm:$false`
+  - IPv4：`Remove-NetRoute -DestinationPrefix <endpoint>/32 -InterfaceIndex <index> -NextHop <gateway> -Confirm:$false`
+  - IPv6：`Remove-NetRoute -DestinationPrefix <endpoint>/128 -InterfaceIndex <index> -NextHop <gateway> -Confirm:$false`
 - 删除后刷新诊断状态。
 
 路由只写入 `ActiveStore`，不加 `-PolicyStore PersistentStore`，所以不会跨重启长期保留。
@@ -92,7 +95,7 @@
 
 - 应用已要求管理员权限，新增路由操作复用该权限。
 - 添加路由前必须显示确认文案：只会影响 Tailscale 对端公网 endpoint，不会修改默认路由。
-- 如果 endpoint IP 为空、不是公网 IPv4、或当前 peer 未直连，则禁用“临时绕过代理”。
+- 如果 endpoint IP 为空、不是公网 IPv4/IPv6、或当前 peer 未直连，则禁用“临时绕过代理”。
 - 如果已有相同目标的非 portshare 路由，先提示用户，不覆盖未知来源路由。
 - 所有外部命令继续通过隐藏子进程 helper 执行，避免弹出 PowerShell 窗口。
 

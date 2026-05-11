@@ -34,6 +34,28 @@ func TestEndpointIPExtractsIPv4(t *testing.T) {
 	}
 }
 
+func TestEndpointIPExtractsIPv6(t *testing.T) {
+	if got := EndpointIP("[2401:b60:1b::1033]:13674"); got != "2401:b60:1b::1033" {
+		t.Fatalf("EndpointIP() = %q", got)
+	}
+}
+
+func TestIsPublicEndpointIPAcceptsIPv4AndIPv6(t *testing.T) {
+	public := []string{"115.233.222.82", "8.8.8.8", "2401:b60:1b::1033", "2606:4700:4700::1111"}
+	for _, ip := range public {
+		if !IsPublicEndpointIP(ip) {
+			t.Fatalf("expected %s to be public", ip)
+		}
+	}
+
+	nonPublic := []string{"", "127.0.0.1", "10.0.0.1", "172.16.0.1", "192.168.1.1", "100.64.0.1", "198.18.0.1", "224.0.0.1", "::1", "fe80::1", "fdfe:dcba:9876::1", "ff02::1"}
+	for _, ip := range nonPublic {
+		if IsPublicEndpointIP(ip) {
+			t.Fatalf("expected %s to be non-public", ip)
+		}
+	}
+}
+
 func TestIsPublicIPv4RejectsPrivateAndProxyRanges(t *testing.T) {
 	public := []string{"115.233.222.82", "8.8.8.8"}
 	for _, ip := range public {
