@@ -12,6 +12,7 @@ import (
 	"github.com/absuq/portshare-desktop/internal/clash"
 	direct "github.com/absuq/portshare-desktop/internal/direct"
 	"github.com/absuq/portshare-desktop/internal/direct/store"
+	"github.com/absuq/portshare-desktop/internal/linkguardian"
 	"github.com/absuq/portshare-desktop/internal/netdiag"
 	"github.com/absuq/portshare-desktop/internal/tailscale"
 )
@@ -81,6 +82,7 @@ type fakeNetworkDiagnostics struct {
 	applyRequest netdiag.BypassRequest
 	active       netdiag.ActiveBypass
 	cleared      netdiag.ActiveBypass
+	reprobe      netdiag.ReprobeResult
 }
 
 func (f *fakeNetworkDiagnostics) DiagnosePeer(_ context.Context, peer string) (netdiag.PeerPathReport, error) {
@@ -105,6 +107,16 @@ func (f *fakeNetworkDiagnostics) ApplyBypass(_ context.Context, request netdiag.
 func (f *fakeNetworkDiagnostics) ClearBypass(_ context.Context, bypass netdiag.ActiveBypass) error {
 	f.cleared = bypass
 	return nil
+}
+
+func (f *fakeNetworkDiagnostics) Reprobe(_ context.Context, request netdiag.ReprobeRequest) netdiag.ReprobeResult {
+	if f.reprobe.RestunAttempted || f.reprobe.RebindAttempted {
+		return f.reprobe
+	}
+	return netdiag.ReprobeResult{
+		RestunAttempted: request.Restun,
+		RebindAttempted: request.Rebind,
+	}
 }
 
 type fakeClashEgress struct {
@@ -477,6 +489,38 @@ func TestApplyAndClearNetworkBypassStoresActiveRoute(t *testing.T) {
 	}
 	if _, ok := m.ActiveNetworkBypass(); ok {
 		t.Fatal("expected active bypass to be cleared")
+	}
+}
+
+func TestOptimizeLinkAppliesRecommendedBypassForHighLatencyTUN(t *testing.T) {
+	diag := &fakeNetworkDiagnostics{report: netdiag.PeerPathReport{
+		PeerTailscaleIP: "100.109.251.97",
+		Status:          netdiag.PathDirectProxy,
+		RouteType:       netdiag.RouteDirect,
+		EndpointIP:      "115.233.222.82",
+		Latency:         "249ms",
+		Candidates: []netdiag.EgressCandidate{{
+			InterfaceAlias: "Ethernet",
+			InterfaceIndex: 15,
+			NextHop:        "192.168.1.1",
+			Recommended:    true,
+		}},
+	}}
+	m := New(Config{NetworkDiagnostics: diag})
+
+	result, err := m.OptimizeLink(context.Background(), "100.109.251.97", linkguardian.Options{AutoBypass: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Decision.Action != linkguardian.ActionApplyBypass || result.Decision.Status != linkguardian.StatusBypassApplied {
+		t.Fatalf("unexpected optimization result: %+v", result)
+	}
+	if diag.applyRequest.EndpointIP != "115.233.222.82" || diag.applyRequest.Candidate.InterfaceIndex != 15 {
+		t.Fatalf("unexpected bypass request: %+v", diag.applyRequest)
+	}
+	if stored, ok := m.ActiveNetworkBypass(); !ok || stored.EndpointIP != "115.233.222.82" {
+		t.Fatalf("expected active bypass to be stored, ok=%v stored=%+v", ok, stored)
 	}
 }
 

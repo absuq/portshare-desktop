@@ -11,6 +11,7 @@ import (
 	"github.com/absuq/portshare-desktop/internal/clash"
 	direct "github.com/absuq/portshare-desktop/internal/direct"
 	"github.com/absuq/portshare-desktop/internal/direct/store"
+	"github.com/absuq/portshare-desktop/internal/linkguardian"
 	"github.com/absuq/portshare-desktop/internal/netdiag"
 	"github.com/absuq/portshare-desktop/internal/tailscale"
 )
@@ -79,6 +80,7 @@ type NetworkDiagnostics interface {
 	DiagnosePeer(context.Context, string) (netdiag.PeerPathReport, error)
 	ApplyBypass(context.Context, netdiag.BypassRequest) (netdiag.ActiveBypass, error)
 	ClearBypass(context.Context, netdiag.ActiveBypass) error
+	Reprobe(context.Context, netdiag.ReprobeRequest) netdiag.ReprobeResult
 }
 
 type ClashEgress interface {
@@ -403,6 +405,113 @@ func (m *Manager) ActiveNetworkBypass() (netdiag.ActiveBypass, bool) {
 	return m.activeBypass, m.hasActiveBypass
 }
 
+func (m *Manager) OptimizeLink(ctx context.Context, peerTailscaleIP string, options linkguardian.Options) (linkguardian.Result, error) {
+	if m.networkDiagnostics == nil {
+		return linkguardian.Result{}, errors.New("network diagnostics is not configured")
+	}
+	peerTailscaleIP = strings.TrimSpace(peerTailscaleIP)
+	result := linkguardian.Result{PeerTailscaleIP: peerTailscaleIP}
+	if peerTailscaleIP == "" {
+		result.Decision = linkguardian.Decision{
+			Status:  linkguardian.StatusFailed,
+			Action:  linkguardian.ActionWatch,
+			Message: "peer tailscale ip is required",
+		}
+		result.Message = result.Decision.Message
+		return result, errors.New("peer tailscale ip is required")
+	}
+
+	active, hasActive := m.ActiveNetworkBypass()
+	report, err := m.networkDiagnostics.DiagnosePeer(ctx, peerTailscaleIP)
+	result.Before = report
+	if err != nil {
+		result.Decision = linkguardian.Decision{
+			Status:  linkguardian.StatusFailed,
+			Action:  linkguardian.ActionWatch,
+			Message: err.Error(),
+		}
+		result.Message = result.Decision.Message
+		return result, err
+	}
+
+	decision := linkguardian.Evaluate(linkguardian.EvaluateInput{
+		Path:            report,
+		AutoBypass:      options.AutoBypass,
+		ActiveBypass:    active,
+		HasActiveBypass: hasActive,
+		LatestLatency:   options.LatestLatency,
+	})
+	result.Decision = decision
+	result.Message = decision.Message
+
+	switch decision.Action {
+	case linkguardian.ActionClearBypass:
+		if err := m.ClearNetworkBypass(ctx); err != nil {
+			result.Decision.Status = linkguardian.StatusFailed
+			result.Message = err.Error()
+			return result, err
+		}
+		result.After = report
+		result.HasActiveBypass = false
+		return result, nil
+	case linkguardian.ActionReprobe:
+		result.Reprobe = m.networkDiagnostics.Reprobe(ctx, netdiag.ReprobeRequest{Restun: true, Rebind: true})
+		after, diagnoseErr := m.networkDiagnostics.DiagnosePeer(ctx, peerTailscaleIP)
+		result.After = after
+		if diagnoseErr != nil {
+			result.Decision = linkguardian.Decision{
+				Status:  linkguardian.StatusFailed,
+				Action:  linkguardian.ActionWatch,
+				Message: diagnoseErr.Error(),
+			}
+			result.Message = result.Decision.Message
+			return result, diagnoseErr
+		}
+		active, hasActive = m.ActiveNetworkBypass()
+		decision = linkguardian.Evaluate(linkguardian.EvaluateInput{
+			Path:            after,
+			AutoBypass:      options.AutoBypass,
+			ActiveBypass:    active,
+			HasActiveBypass: hasActive,
+			LatestLatency:   options.LatestLatency,
+		})
+		result.Decision = decision
+		result.Message = decision.Message
+		if decision.Action != linkguardian.ActionApplyBypass {
+			result.ActiveBypass = active
+			result.HasActiveBypass = hasActive
+			return result, nil
+		}
+		report = after
+	case linkguardian.ActionApplyBypass:
+		result.After = report
+	default:
+		result.After = report
+		result.ActiveBypass = active
+		result.HasActiveBypass = hasActive
+		return result, nil
+	}
+
+	active, err = m.ApplyNetworkBypass(ctx, netdiag.BypassRequest{
+		PeerTailscaleIP: report.PeerTailscaleIP,
+		EndpointIP:      report.EndpointIP,
+		Candidate:       decision.Candidate,
+	})
+	if err != nil {
+		result.Decision.Status = linkguardian.StatusFailed
+		result.Message = err.Error()
+		return result, err
+	}
+	result.ActiveBypass = active
+	result.HasActiveBypass = true
+	result.Decision.Status = linkguardian.StatusBypassApplied
+	result.Message = "已应用 endpoint 精确绕过：" + active.EndpointIP
+	if after, diagnoseErr := m.networkDiagnostics.DiagnosePeer(ctx, peerTailscaleIP); diagnoseErr == nil {
+		result.After = after
+	}
+	return result, nil
+}
+
 func (m *Manager) ProbePeerLatency(ctx context.Context, peerIP string) (time.Duration, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -425,7 +534,11 @@ func probeTCPConnectLatency(ctx context.Context, address string, timeout time.Du
 		return 0, err
 	}
 	_ = conn.Close()
-	return time.Since(started), nil
+	elapsed := time.Since(started)
+	if elapsed <= 0 {
+		return time.Nanosecond, nil
+	}
+	return elapsed, nil
 }
 
 func (m *Manager) DetectClash(ctx context.Context) (clash.DiscoveryReport, error) {

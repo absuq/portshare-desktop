@@ -13,6 +13,7 @@ import (
 	"github.com/absuq/portshare-desktop/internal/clash"
 	directmanager "github.com/absuq/portshare-desktop/internal/direct/manager"
 	"github.com/absuq/portshare-desktop/internal/direct/store"
+	"github.com/absuq/portshare-desktop/internal/linkguardian"
 	"github.com/absuq/portshare-desktop/internal/netdiag"
 	"github.com/absuq/portshare-desktop/internal/tailscale"
 )
@@ -38,6 +39,9 @@ type fakeDirectManager struct {
 	clashRestored      bool
 	peerLatencies      map[string]time.Duration
 	peerLatencyErr     error
+	guardianPeer       string
+	guardianOptions    linkguardian.Options
+	guardianResult     linkguardian.Result
 }
 
 func (f *fakeDirectManager) Ready(context.Context) directmanager.ReadyState {
@@ -119,6 +123,23 @@ func (f *fakeDirectManager) ActiveNetworkBypass() (netdiag.ActiveBypass, bool) {
 		return netdiag.ActiveBypass{}, false
 	}
 	return f.activeBypass, true
+}
+
+func (f *fakeDirectManager) OptimizeLink(_ context.Context, peerIP string, options linkguardian.Options) (linkguardian.Result, error) {
+	f.guardianPeer = peerIP
+	f.guardianOptions = options
+	if f.guardianResult.PeerTailscaleIP == "" {
+		f.guardianResult = linkguardian.Result{
+			PeerTailscaleIP: peerIP,
+			Decision: linkguardian.Decision{
+				Status:  linkguardian.StatusOptimized,
+				Action:  linkguardian.ActionWatch,
+				Message: "当前已经是低延迟直连",
+			},
+			Message: "当前已经是低延迟直连",
+		}
+	}
+	return f.guardianResult, nil
 }
 
 func (f *fakeDirectManager) ProbePeerLatency(_ context.Context, peerIP string) (time.Duration, error) {
@@ -677,6 +698,37 @@ func TestDirectControllerRefreshPeerLatenciesStoresLatencyByPeer(t *testing.T) {
 	latency, ok := state.PeerLatencies["device-b"]
 	if !ok || latency.Latency != 23*time.Millisecond || !latency.Updated {
 		t.Fatalf("expected latency stored by peer id, got %+v", state.PeerLatencies)
+	}
+}
+
+func TestDirectControllerOptimizeLinkUsesExistingPeerLatencySample(t *testing.T) {
+	mgr := &fakeDirectManager{
+		peers: []directmanager.TrustedPeer{{ID: "device-b", DisplayName: "desktop-b", TailscaleIP: "100.109.251.97"}},
+		peerLatencies: map[string]time.Duration{
+			"100.109.251.97": 23 * time.Millisecond,
+		},
+	}
+	ctrl := NewDirectController(mgr)
+	if err := ctrl.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := ctrl.RefreshPeerLatencies(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ctrl.OptimizeLink(context.Background(), "100.109.251.97", true); err != nil {
+		t.Fatal(err)
+	}
+
+	state := ctrl.State()
+	if mgr.guardianPeer != "100.109.251.97" {
+		t.Fatalf("expected selected peer to be optimized, got %q", mgr.guardianPeer)
+	}
+	if mgr.guardianOptions.LatestLatency != 23*time.Millisecond || !mgr.guardianOptions.AutoBypass {
+		t.Fatalf("expected existing latency sample and auto bypass option, got %+v", mgr.guardianOptions)
+	}
+	if state.LinkGuardian.Decision.Status != linkguardian.StatusOptimized {
+		t.Fatalf("expected link guardian result in state, got %+v", state.LinkGuardian)
 	}
 }
 

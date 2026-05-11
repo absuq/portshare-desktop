@@ -75,3 +75,15 @@ type ActiveBypass struct {
 	NextHop         string
 	CreatedAt       time.Time
 }
+
+type ReprobeRequest struct {
+	Restun bool
+	Rebind bool
+}
+
+type ReprobeResult struct {
+	RestunAttempted bool
+	RebindAttempted bool
+	RestunError     string
+	RebindError     string
+}

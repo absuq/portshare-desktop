@@ -11,6 +11,7 @@ import (
 
 	"github.com/absuq/portshare-desktop/internal/clash"
 	directmanager "github.com/absuq/portshare-desktop/internal/direct/manager"
+	"github.com/absuq/portshare-desktop/internal/linkguardian"
 	"github.com/absuq/portshare-desktop/internal/netdiag"
 	"github.com/absuq/portshare-desktop/internal/tailscale"
 )
@@ -36,6 +37,7 @@ type DirectManager interface {
 	ApplyNetworkBypass(context.Context, netdiag.BypassRequest) (netdiag.ActiveBypass, error)
 	ClearNetworkBypass(context.Context) error
 	ActiveNetworkBypass() (netdiag.ActiveBypass, bool)
+	OptimizeLink(context.Context, string, linkguardian.Options) (linkguardian.Result, error)
 	ProbePeerLatency(context.Context, string) (time.Duration, error)
 	DetectClash(context.Context) (clash.DiscoveryReport, error)
 	RefreshClashNodes(context.Context) (clash.DiscoveryReport, error)
@@ -60,6 +62,7 @@ type DirectState struct {
 	NetworkPath                  netdiag.PeerPathReport
 	ActiveBypass                 netdiag.ActiveBypass
 	HasActiveBypass              bool
+	LinkGuardian                 linkguardian.Result
 	ClashReport                  clash.DiscoveryReport
 	ClashApplyResult             clash.ApplyResult
 	DiagnosticCode               tailscale.DiagnosticCode
@@ -242,6 +245,47 @@ func (c *DirectController) RefreshPeerLatencies(ctx context.Context) error {
 	return nil
 }
 
+func (c *DirectController) OptimizeLink(ctx context.Context, peerIP string, autoBypass bool) error {
+	if err := c.requireManager(); err != nil {
+		return err
+	}
+	peerIP = strings.TrimSpace(peerIP)
+	if peerIP == "" {
+		err := errors.New("请选择可信设备或输入对方 Tailscale IP")
+		c.state.Message = err.Error()
+		return err
+	}
+	result, err := c.manager.OptimizeLink(ctx, peerIP, linkguardian.Options{
+		AutoBypass:    autoBypass,
+		LatestLatency: c.latestPeerLatency(peerIP),
+	})
+	c.state.LinkGuardian = copyLinkGuardianResult(result)
+	if result.After.PeerTailscaleIP != "" || result.After.EndpointIP != "" || result.After.Status != netdiag.PathUnknown {
+		c.state.NetworkPath = copyNetworkPathReport(result.After)
+	} else if result.Before.PeerTailscaleIP != "" || result.Before.EndpointIP != "" || result.Before.Status != netdiag.PathUnknown {
+		c.state.NetworkPath = copyNetworkPathReport(result.Before)
+	}
+	if result.HasActiveBypass {
+		c.state.ActiveBypass = result.ActiveBypass
+		c.state.HasActiveBypass = true
+	} else {
+		c.state.ActiveBypass, c.state.HasActiveBypass = c.manager.ActiveNetworkBypass()
+	}
+	if result.Message != "" {
+		c.state.Message = result.Message
+	}
+	if err != nil {
+		if c.state.Message == "" {
+			c.state.Message = "链路优化失败：" + err.Error()
+		}
+		return err
+	}
+	if c.state.Message == "" {
+		c.state.Message = linkGuardianStatusText(c.state)
+	}
+	return nil
+}
+
 func (c *DirectController) DetectClash(ctx context.Context) error {
 	if err := c.requireManager(); err != nil {
 		return err
@@ -376,7 +420,27 @@ func (c *DirectController) State() DirectState {
 	state.NetworkPath = copyNetworkPathReport(state.NetworkPath)
 	state.ClashReport = copyClashReport(state.ClashReport)
 	state.PeerLatencies = copyPeerLatencies(state.PeerLatencies)
+	state.LinkGuardian = copyLinkGuardianResult(state.LinkGuardian)
 	return state
+}
+
+func (c *DirectController) latestPeerLatency(peerIP string) time.Duration {
+	peerIP = strings.TrimSpace(peerIP)
+	if peerIP == "" || len(c.state.PeerLatencies) == 0 {
+		return 0
+	}
+	for _, peer := range c.state.Peers {
+		if strings.TrimSpace(peer.TailscaleIP) != peerIP {
+			continue
+		}
+		if latency := c.state.PeerLatencies[peerLatencyKey(peer)]; latency.Updated && latency.Latency > 0 {
+			return latency.Latency
+		}
+	}
+	if latency := c.state.PeerLatencies[peerIP]; latency.Updated && latency.Latency > 0 {
+		return latency.Latency
+	}
+	return 0
 }
 
 func (c *DirectController) requireManager() error {
@@ -499,6 +563,12 @@ func copyNetworkPathReport(report netdiag.PeerPathReport) netdiag.PeerPathReport
 	return report
 }
 
+func copyLinkGuardianResult(result linkguardian.Result) linkguardian.Result {
+	result.Before = copyNetworkPathReport(result.Before)
+	result.After = copyNetworkPathReport(result.After)
+	return result
+}
+
 func copyClashReport(report clash.DiscoveryReport) clash.DiscoveryReport {
 	report.TUNInterfaces = append([]clash.TUNInterface(nil), report.TUNInterfaces...)
 	report.ProxyPorts = append([]clash.ProxyPort(nil), report.ProxyPorts...)
@@ -531,6 +601,17 @@ func networkPathStatusText(state DirectState) string {
 	default:
 		return "网络路径：未检测"
 	}
+}
+
+func linkGuardianStatusText(state DirectState) string {
+	result := state.LinkGuardian
+	if result.Message != "" {
+		return "链路守护：" + result.Message
+	}
+	if result.Decision.Message != "" {
+		return "链路守护：" + result.Decision.Message
+	}
+	return "链路守护：待优化"
 }
 
 func networkPathSummary(prefix string, report netdiag.PeerPathReport) string {

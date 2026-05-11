@@ -50,6 +50,7 @@ func (a *App) buildMainWindow() fyne.Window {
 	networkPathLabel := widget.NewLabel("网络路径：未检测")
 	networkRouteLabel := widget.NewLabel("当前出口：-")
 	bypassLabel := widget.NewLabel("临时路由：未启用")
+	linkGuardianLabel := widget.NewLabel("链路守护：待优化")
 	clashTunLabel := widget.NewLabel("TUN：未检测")
 	clashPortsLabel := widget.NewLabel("代理入口：未检测")
 	clashControlLabel := widget.NewLabel("控制接口：未检测")
@@ -57,7 +58,7 @@ func (a *App) buildMainWindow() fyne.Window {
 	messageLabel := widget.NewLabel("准备就绪")
 	messageLabel.Wrapping = fyne.TextWrapOff
 	messageLabel.Truncation = fyne.TextTruncateEllipsis
-	for _, label := range []*widget.Label{statusLabel, ipLabel, controlLabel, bridgeLabel, bridgeConflictLabel, networkPathLabel, networkRouteLabel, bypassLabel, clashTunLabel, clashPortsLabel, clashControlLabel, clashResultLabel, messageLabel} {
+	for _, label := range []*widget.Label{statusLabel, ipLabel, controlLabel, bridgeLabel, bridgeConflictLabel, networkPathLabel, networkRouteLabel, bypassLabel, linkGuardianLabel, clashTunLabel, clashPortsLabel, clashControlLabel, clashResultLabel, messageLabel} {
 		label.Wrapping = fyne.TextWrapWord
 	}
 	messageLabel.Wrapping = fyne.TextWrapOff
@@ -70,6 +71,8 @@ func (a *App) buildMainWindow() fyne.Window {
 		selectedCandidateIndex = indexOfString(candidateOptions, value)
 	})
 	candidateSelect.PlaceHolder = "选择公网出口"
+	autoBypassCheck := widget.NewCheck("自动精确绕过", nil)
+	autoBypassCheck.SetChecked(true)
 	clashNodeSelect := widget.NewSelect(nil, func(value string) {
 		selectedClashNodeIndex = indexOfString(clashOptions, value)
 	})
@@ -187,6 +190,15 @@ func (a *App) buildMainWindow() fyne.Window {
 			return a.directCtrl.ClearNetworkBypass(ctx)
 		})
 	})
+	optimizeLinkButton := widget.NewButton("重新优化", func() {
+		withTimeout(func(ctx context.Context) error {
+			peerIP := selectedPeerTailscaleIP(state.Peers, selectedPeerID, peerEntry.Text)
+			if peerIP == "" {
+				return errors.New("请先选择可信设备或输入对方 Tailscale IP")
+			}
+			return a.directCtrl.OptimizeLink(ctx, peerIP, autoBypassCheck.Checked)
+		})
+	})
 	detectClashButton := widget.NewButton("检测代理/TUN", func() {
 		withTimeout(func(ctx context.Context) error {
 			return a.directCtrl.DetectClash(ctx)
@@ -233,6 +245,7 @@ func (a *App) buildMainWindow() fyne.Window {
 		networkPathLabel.SetText(networkPathStatusText(state))
 		networkRouteLabel.SetText(networkRouteDetailText(state))
 		bypassLabel.SetText(activeBypassStatusText(state))
+		linkGuardianLabel.SetText(linkGuardianStatusText(state))
 		clashTunLabel.SetText(clashTUNStatusText(state))
 		clashPortsLabel.SetText(clashProxyPortsText(state))
 		clashControlLabel.SetText(clashControlText(state))
@@ -293,7 +306,10 @@ func (a *App) buildMainWindow() fyne.Window {
 		networkPathLabel,
 		networkRouteLabel,
 		bypassLabel,
+		linkGuardianLabel,
 		detectNetworkButton,
+		autoBypassCheck,
+		optimizeLinkButton,
 		candidateSelect,
 		applyBypassButton,
 		clearBypassButton,

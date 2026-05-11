@@ -105,6 +105,23 @@ func (s *Service) ClearBypass(ctx context.Context, bypass ActiveBypass) error {
 	return err
 }
 
+func (s *Service) Reprobe(ctx context.Context, request ReprobeRequest) ReprobeResult {
+	var result ReprobeResult
+	if request.Restun {
+		result.RestunAttempted = true
+		if _, err := s.runner.Run(ctx, "tailscale", "debug", "restun"); err != nil {
+			result.RestunError = err.Error()
+		}
+	}
+	if request.Rebind {
+		result.RebindAttempted = true
+		if _, err := s.runner.Run(ctx, "tailscale", "debug", "rebind"); err != nil {
+			result.RebindError = err.Error()
+		}
+	}
+	return result
+}
+
 func (s *Service) currentRoute(ctx context.Context, endpointIP string) (RouteInfo, error) {
 	if endpointIP == "" {
 		return RouteInfo{}, fmt.Errorf("缺少 endpoint IP")

@@ -137,3 +137,36 @@ func TestDiagnosePeerReportsDERPAndStillListsEgressCandidates(t *testing.T) {
 		t.Fatalf("expected DERP report to include egress candidates, got %+v", report.Candidates)
 	}
 }
+
+func TestServiceReprobeRunsRestunThenRebind(t *testing.T) {
+	runner := &recordingRunner{outputs: map[string][]byte{
+		"tailscale debug restun": []byte("ok"),
+		"tailscale debug rebind": []byte("ok"),
+	}}
+	service := NewService(runner)
+
+	result := service.Reprobe(context.Background(), ReprobeRequest{Restun: true, Rebind: true})
+
+	if !result.RestunAttempted || !result.RebindAttempted || result.RestunError != "" || result.RebindError != "" {
+		t.Fatalf("unexpected reprobe result: %+v", result)
+	}
+	command := strings.Join(runner.commands, "\n")
+	restun := strings.Index(command, "tailscale debug restun")
+	rebind := strings.Index(command, "tailscale debug rebind")
+	if restun == -1 || rebind == -1 || restun > rebind {
+		t.Fatalf("expected restun before rebind, got %s", command)
+	}
+}
+
+func TestServiceReprobeRecordsDebugCommandFailures(t *testing.T) {
+	service := NewService(&recordingRunner{})
+
+	result := service.Reprobe(context.Background(), ReprobeRequest{Restun: true, Rebind: true})
+
+	if !result.RestunAttempted || !result.RebindAttempted {
+		t.Fatalf("expected both commands to be attempted, got %+v", result)
+	}
+	if result.RestunError == "" || result.RebindError == "" {
+		t.Fatalf("expected errors to be recorded, got %+v", result)
+	}
+}
