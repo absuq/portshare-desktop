@@ -36,6 +36,8 @@ type fakeDirectManager struct {
 	clashApplyRequest  clash.ApplyRequest
 	clashApplyResult   clash.ApplyResult
 	clashRestored      bool
+	peerLatencies      map[string]time.Duration
+	peerLatencyErr     error
 }
 
 func (f *fakeDirectManager) Ready(context.Context) directmanager.ReadyState {
@@ -117,6 +119,18 @@ func (f *fakeDirectManager) ActiveNetworkBypass() (netdiag.ActiveBypass, bool) {
 		return netdiag.ActiveBypass{}, false
 	}
 	return f.activeBypass, true
+}
+
+func (f *fakeDirectManager) ProbePeerLatency(_ context.Context, peerIP string) (time.Duration, error) {
+	if f.peerLatencyErr != nil {
+		return 0, f.peerLatencyErr
+	}
+	if f.peerLatencies != nil {
+		if latency, ok := f.peerLatencies[peerIP]; ok {
+			return latency, nil
+		}
+	}
+	return 0, errors.New("latency unavailable")
 }
 
 func (f *fakeDirectManager) DetectClash(context.Context) (clash.DiscoveryReport, error) {
@@ -596,13 +610,55 @@ func TestScrollPageAllowsBothAxisOverflowInsideTabs(t *testing.T) {
 	}
 }
 
+func TestPeerLatencyRefreshIntervalIsTwoHundredMilliseconds(t *testing.T) {
+	if peerLatencyRefreshInterval != 200*time.Millisecond {
+		t.Fatalf("expected peer latency refresh interval to be 200ms, got %s", peerLatencyRefreshInterval)
+	}
+	if peerLatencyProbeTimeout >= peerLatencyRefreshInterval {
+		t.Fatalf("probe timeout should stay below refresh interval, timeout=%s interval=%s", peerLatencyProbeTimeout, peerLatencyRefreshInterval)
+	}
+}
+
 func TestPeerDisplayMetaShowsFullAccessAuthorization(t *testing.T) {
 	peer := directmanager.TrustedPeer{
 		TailscaleIP:        "100.109.251.97",
 		AccessAuthorizedAt: time.Now().UTC(),
 	}
-	if got := peerDisplayMeta(peer); !strings.Contains(got, "已授权全端口") {
+	if got := peerDisplayMeta(peer, PeerLatency{}); !strings.Contains(got, "已授权全端口") {
 		t.Fatalf("expected full access authorization in peer meta, got %q", got)
+	}
+}
+
+func TestPeerDisplayMetaAppendsLatency(t *testing.T) {
+	peer := directmanager.TrustedPeer{
+		TailscaleIP:        "100.109.251.97",
+		AccessAuthorizedAt: time.Now().UTC(),
+	}
+	latency := PeerLatency{Latency: 23 * time.Millisecond, Updated: true}
+
+	if got := peerDisplayMeta(peer, latency); got != "100.109.251.97 · 已授权全端口 · 23ms" {
+		t.Fatalf("unexpected peer meta with latency: %q", got)
+	}
+}
+
+func TestDirectControllerRefreshPeerLatenciesStoresLatencyByPeer(t *testing.T) {
+	mgr := &fakeDirectManager{
+		peers:         []directmanager.TrustedPeer{{ID: "device-b", DisplayName: "desktop-b", TailscaleIP: "100.109.251.97"}},
+		peerLatencies: map[string]time.Duration{"100.109.251.97": 23 * time.Millisecond},
+	}
+	ctrl := NewDirectController(mgr)
+	if err := ctrl.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ctrl.RefreshPeerLatencies(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	state := ctrl.State()
+	latency, ok := state.PeerLatencies["device-b"]
+	if !ok || latency.Latency != 23*time.Millisecond || !latency.Updated {
+		t.Fatalf("expected latency stored by peer id, got %+v", state.PeerLatencies)
 	}
 }
 

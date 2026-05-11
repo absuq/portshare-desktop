@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/absuq/portshare-desktop/internal/clash"
 	directmanager "github.com/absuq/portshare-desktop/internal/direct/manager"
@@ -35,6 +36,7 @@ type DirectManager interface {
 	ApplyNetworkBypass(context.Context, netdiag.BypassRequest) (netdiag.ActiveBypass, error)
 	ClearNetworkBypass(context.Context) error
 	ActiveNetworkBypass() (netdiag.ActiveBypass, bool)
+	ProbePeerLatency(context.Context, string) (time.Duration, error)
 	DetectClash(context.Context) (clash.DiscoveryReport, error)
 	RefreshClashNodes(context.Context) (clash.DiscoveryReport, error)
 	ApplyClashNode(context.Context, clash.ApplyRequest) (clash.ApplyResult, error)
@@ -63,6 +65,13 @@ type DirectState struct {
 	DiagnosticCode               tailscale.DiagnosticCode
 	Message                      string
 	Peers                        []directmanager.TrustedPeer
+	PeerLatencies                map[string]PeerLatency
+}
+
+type PeerLatency struct {
+	Latency time.Duration
+	Error   string
+	Updated bool
 }
 
 func NewDirectController(manager DirectManager) *DirectController {
@@ -210,6 +219,29 @@ func (c *DirectController) ClearNetworkBypass(ctx context.Context) error {
 	return nil
 }
 
+func (c *DirectController) RefreshPeerLatencies(ctx context.Context) error {
+	if err := c.requireManager(); err != nil {
+		return err
+	}
+	if c.state.PeerLatencies == nil {
+		c.state.PeerLatencies = map[string]PeerLatency{}
+	}
+	for _, peer := range c.state.Peers {
+		key := peerLatencyKey(peer)
+		peerIP := strings.TrimSpace(peer.TailscaleIP)
+		if key == "" || peerIP == "" {
+			continue
+		}
+		latency, err := c.manager.ProbePeerLatency(ctx, peerIP)
+		if err != nil {
+			c.state.PeerLatencies[key] = PeerLatency{Error: err.Error(), Updated: true}
+			continue
+		}
+		c.state.PeerLatencies[key] = PeerLatency{Latency: latency, Updated: true}
+	}
+	return nil
+}
+
 func (c *DirectController) DetectClash(ctx context.Context) error {
 	if err := c.requireManager(); err != nil {
 		return err
@@ -343,6 +375,7 @@ func (c *DirectController) State() DirectState {
 	state.LocalhostBridgeConflictPorts = copyInts(state.LocalhostBridgeConflictPorts)
 	state.NetworkPath = copyNetworkPathReport(state.NetworkPath)
 	state.ClashReport = copyClashReport(state.ClashReport)
+	state.PeerLatencies = copyPeerLatencies(state.PeerLatencies)
 	return state
 }
 
@@ -437,6 +470,24 @@ func displayPeerName(name, id string) string {
 
 func copyTrustedPeers(peers []directmanager.TrustedPeer) []directmanager.TrustedPeer {
 	return append([]directmanager.TrustedPeer(nil), peers...)
+}
+
+func copyPeerLatencies(latencies map[string]PeerLatency) map[string]PeerLatency {
+	if len(latencies) == 0 {
+		return nil
+	}
+	result := make(map[string]PeerLatency, len(latencies))
+	for key, value := range latencies {
+		result[key] = value
+	}
+	return result
+}
+
+func peerLatencyKey(peer directmanager.TrustedPeer) string {
+	if strings.TrimSpace(peer.ID) != "" {
+		return peer.ID
+	}
+	return strings.TrimSpace(peer.TailscaleIP)
 }
 
 func copyInts(values []int) []int {

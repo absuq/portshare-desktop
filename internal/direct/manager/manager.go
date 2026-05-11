@@ -403,6 +403,31 @@ func (m *Manager) ActiveNetworkBypass() (netdiag.ActiveBypass, bool) {
 	return m.activeBypass, m.hasActiveBypass
 }
 
+func (m *Manager) ProbePeerLatency(ctx context.Context, peerIP string) (time.Duration, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	peerIP = strings.TrimSpace(peerIP)
+	if peerIP == "" {
+		return 0, errors.New("peer tailscale ip is required")
+	}
+	return probeTCPConnectLatency(ctx, net.JoinHostPort(peerIP, "17890"), 150*time.Millisecond)
+}
+
+func probeTCPConnectLatency(ctx context.Context, address string, timeout time.Duration) (time.Duration, error) {
+	dialer := net.Dialer{Timeout: 150 * time.Millisecond}
+	if timeout > 0 {
+		dialer.Timeout = timeout
+	}
+	started := time.Now()
+	conn, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return 0, err
+	}
+	_ = conn.Close()
+	return time.Since(started), nil
+}
+
 func (m *Manager) DetectClash(ctx context.Context) (clash.DiscoveryReport, error) {
 	if m.clashEgress == nil {
 		return clash.DiscoveryReport{}, errors.New("clash egress is not configured")

@@ -21,6 +21,11 @@ import (
 	"github.com/absuq/portshare-desktop/internal/netdiag"
 )
 
+const (
+	peerLatencyRefreshInterval = 200 * time.Millisecond
+	peerLatencyProbeTimeout    = 150 * time.Millisecond
+)
+
 func (a *App) buildMainWindow() fyne.Window {
 	w := a.fyneApp.NewWindow("portshare")
 	w.Resize(fyne.NewSize(1040, 680))
@@ -88,7 +93,7 @@ func (a *App) buildMainWindow() fyne.Window {
 			name := box.Objects[0].(*widget.Label)
 			meta := box.Objects[1].(*widget.Label)
 			name.SetText(peerDisplayName(peer))
-			meta.SetText(peerDisplayMeta(peer))
+			meta.SetText(peerDisplayMeta(peer, state.PeerLatencies[peerLatencyKey(peer)]))
 		},
 	)
 	peers.OnSelected = func(id widget.ListItemID) {
@@ -332,7 +337,30 @@ func (a *App) buildMainWindow() fyne.Window {
 	main.Offset = 0.32
 	w.SetContent(container.NewBorder(statusBand, nil, nil, nil, main))
 	render()
+	latencyCtx, stopLatencyRefresh := context.WithCancel(context.Background())
+	w.SetOnClosed(stopLatencyRefresh)
+	startPeerLatencyRefresh(latencyCtx, func(ctx context.Context) {
+		_ = a.directCtrl.RefreshPeerLatencies(ctx)
+		render()
+	})
 	return w
+}
+
+func startPeerLatencyRefresh(ctx context.Context, refresh func(context.Context)) {
+	go func() {
+		ticker := time.NewTicker(peerLatencyRefreshInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				tickCtx, cancel := context.WithTimeout(ctx, peerLatencyProbeTimeout)
+				refresh(tickCtx)
+				cancel()
+			}
+		}
+	}()
 }
 
 func scrollPage(content fyne.CanvasObject) *container.Scroll {
@@ -393,7 +421,7 @@ func peerDisplayName(peer directmanager.TrustedPeer) string {
 	return peer.ID
 }
 
-func peerDisplayMeta(peer directmanager.TrustedPeer) string {
+func peerDisplayMeta(peer directmanager.TrustedPeer, latency PeerLatency) string {
 	parts := []string{valueOrDash(peer.TailscaleIP)}
 	if !peer.AccessAuthorizedAt.IsZero() {
 		parts = append(parts, "已授权全端口")
@@ -401,7 +429,17 @@ func peerDisplayMeta(peer directmanager.TrustedPeer) string {
 	if peer.LastRoute != "" {
 		parts = append(parts, peer.LastRoute)
 	}
+	if latency.Updated {
+		parts = append(parts, peerLatencyText(latency))
+	}
 	return strings.Join(parts, " · ")
+}
+
+func peerLatencyText(latency PeerLatency) string {
+	if latency.Latency > 0 {
+		return fmt.Sprintf("%dms", latency.Latency.Milliseconds())
+	}
+	return "延迟 -"
 }
 
 func hasPeer(peers []directmanager.TrustedPeer, id string) bool {

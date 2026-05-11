@@ -3,6 +3,7 @@ package manager
 import (
 	"context"
 	"fmt"
+	"net"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -523,6 +524,31 @@ func TestClashEgressDelegatesDiscoveryAndNodeSelection(t *testing.T) {
 	if !egress.restored {
 		t.Fatal("expected restore to be delegated")
 	}
+}
+
+func TestProbeTCPConnectLatencyMeasuresReachableListener(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}()
+
+	latency, err := probeTCPConnectLatency(context.Background(), listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latency <= 0 {
+		t.Fatalf("expected positive latency, got %s", latency)
+	}
+	<-done
 }
 
 func TestAuthenticatedIncomingPeerIsStoredAndAuthorized(t *testing.T) {
