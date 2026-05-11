@@ -9,6 +9,7 @@ import (
 
 	directmanager "github.com/absuq/portshare-desktop/internal/direct/manager"
 	"github.com/absuq/portshare-desktop/internal/direct/store"
+	"github.com/absuq/portshare-desktop/internal/netdiag"
 	"github.com/absuq/portshare-desktop/internal/tailscale"
 )
 
@@ -22,6 +23,11 @@ type fakeDirectManager struct {
 	pairAddress        string
 	trustedErr         error
 	pairErr            error
+	networkReport      netdiag.PeerPathReport
+	networkPeer        string
+	applyRequest       netdiag.BypassRequest
+	activeBypass       netdiag.ActiveBypass
+	clearBypassCalled  bool
 }
 
 func (f *fakeDirectManager) Ready(context.Context) directmanager.ReadyState {
@@ -73,6 +79,38 @@ func (f *fakeDirectManager) LocalhostBridgeConflictPorts() []int {
 	return []int{3000}
 }
 
+func (f *fakeDirectManager) NetworkPath(_ context.Context, peer string) (netdiag.PeerPathReport, error) {
+	f.networkPeer = peer
+	return f.networkReport, nil
+}
+
+func (f *fakeDirectManager) ApplyNetworkBypass(_ context.Context, request netdiag.BypassRequest) (netdiag.ActiveBypass, error) {
+	f.applyRequest = request
+	if f.activeBypass.EndpointIP == "" {
+		f.activeBypass = netdiag.ActiveBypass{
+			PeerTailscaleIP: request.PeerTailscaleIP,
+			EndpointIP:      request.EndpointIP,
+			InterfaceIndex:  request.Candidate.InterfaceIndex,
+			NextHop:         request.Candidate.NextHop,
+			CreatedAt:       time.Now().UTC(),
+		}
+	}
+	return f.activeBypass, nil
+}
+
+func (f *fakeDirectManager) ClearNetworkBypass(context.Context) error {
+	f.clearBypassCalled = true
+	f.activeBypass = netdiag.ActiveBypass{}
+	return nil
+}
+
+func (f *fakeDirectManager) ActiveNetworkBypass() (netdiag.ActiveBypass, bool) {
+	if f.activeBypass.EndpointIP == "" {
+		return netdiag.ActiveBypass{}, false
+	}
+	return f.activeBypass, true
+}
+
 func TestDirectControllerRefreshShowsReadyState(t *testing.T) {
 	mgr := &fakeDirectManager{ready: directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104", Code: tailscale.CodeOK}}
 	ctrl := NewDirectController(mgr)
@@ -93,6 +131,67 @@ func TestDirectControllerRefreshShowsReadyState(t *testing.T) {
 	}
 	if len(state.LocalhostBridgeConflictPorts) != 1 || state.LocalhostBridgeConflictPorts[0] != 3000 {
 		t.Fatalf("expected localhost bridge conflict ports in state, got %+v", state.LocalhostBridgeConflictPorts)
+	}
+}
+
+func TestDirectControllerDetectNetworkPathUpdatesState(t *testing.T) {
+	mgr := &fakeDirectManager{networkReport: netdiag.PeerPathReport{
+		PeerTailscaleIP: "100.109.251.97",
+		Status:          netdiag.PathDirectProxy,
+		Endpoint:        "115.233.222.82:41641",
+		EndpointIP:      "115.233.222.82",
+		Latency:         "249ms",
+		CurrentRoute:    netdiag.RouteInfo{InterfaceAlias: "Meta", NextHop: "198.18.0.2"},
+		Candidates: []netdiag.EgressCandidate{{
+			InterfaceAlias: "以太网",
+			InterfaceIndex: 15,
+			NextHop:        "192.168.1.1",
+			Recommended:    true,
+		}},
+	}}
+	ctrl := NewDirectController(mgr)
+
+	if err := ctrl.DetectNetworkPath(context.Background(), "100.109.251.97"); err != nil {
+		t.Fatal(err)
+	}
+
+	state := ctrl.State()
+	if mgr.networkPeer != "100.109.251.97" || state.NetworkPath.Status != netdiag.PathDirectProxy {
+		t.Fatalf("unexpected network state: peer=%q state=%+v", mgr.networkPeer, state.NetworkPath)
+	}
+	if !strings.Contains(state.Message, "直连但疑似代理绕路") {
+		t.Fatalf("expected proxy warning message, got %q", state.Message)
+	}
+}
+
+func TestDirectControllerApplyAndClearNetworkBypass(t *testing.T) {
+	mgr := &fakeDirectManager{}
+	ctrl := NewDirectController(mgr)
+	ctrl.state.NetworkPath = netdiag.PeerPathReport{
+		PeerTailscaleIP: "100.109.251.97",
+		EndpointIP:      "115.233.222.82",
+		Candidates: []netdiag.EgressCandidate{{
+			InterfaceAlias: "以太网",
+			InterfaceIndex: 15,
+			NextHop:        "192.168.1.1",
+		}},
+	}
+
+	if err := ctrl.ApplyNetworkBypass(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	if mgr.applyRequest.EndpointIP != "115.233.222.82" || mgr.applyRequest.Candidate.InterfaceIndex != 15 {
+		t.Fatalf("unexpected bypass request: %+v", mgr.applyRequest)
+	}
+	if !ctrl.State().HasActiveBypass {
+		t.Fatal("expected active bypass in state")
+	}
+
+	if err := ctrl.ClearNetworkBypass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !mgr.clearBypassCalled || ctrl.State().HasActiveBypass {
+		t.Fatalf("expected bypass to be cleared, called=%v state=%+v", mgr.clearBypassCalled, ctrl.State())
 	}
 }
 
@@ -414,6 +513,19 @@ func TestLocalhostBridgeConflictStatusTextShowsConflictPorts(t *testing.T) {
 func TestLocalhostBridgeConflictStatusTextShowsNone(t *testing.T) {
 	if got := localhostBridgeConflictStatusText(DirectState{}); got != "localhost 冲突：无" {
 		t.Fatalf("unexpected localhost bridge conflict status: %q", got)
+	}
+}
+
+func TestNetworkPathStatusTextShowsProxyWarning(t *testing.T) {
+	state := DirectState{NetworkPath: netdiag.PeerPathReport{
+		Status:       netdiag.PathDirectProxy,
+		Endpoint:     "115.233.222.82:41641",
+		Latency:      "249ms",
+		CurrentRoute: netdiag.RouteInfo{InterfaceAlias: "Meta", NextHop: "198.18.0.2"},
+	}}
+	got := networkPathStatusText(state)
+	if !strings.Contains(got, "直连但疑似代理绕路") || !strings.Contains(got, "249ms") {
+		t.Fatalf("unexpected network status text: %q", got)
 	}
 }
 

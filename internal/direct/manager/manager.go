@@ -10,6 +10,7 @@ import (
 
 	direct "github.com/absuq/portshare-desktop/internal/direct"
 	"github.com/absuq/portshare-desktop/internal/direct/store"
+	"github.com/absuq/portshare-desktop/internal/netdiag"
 	"github.com/absuq/portshare-desktop/internal/tailscale"
 )
 
@@ -19,25 +20,27 @@ type Tailscale interface {
 }
 
 type Config struct {
-	Tailscale        Tailscale
-	PairClient       PairClient
-	PeerStore        PeerStore
-	AccessAuthorizer AccessAuthorizer
-	LocalhostBridge  LocalhostBridge
-	SecretLabel      string
-	DeviceID         string
-	DeviceName       string
+	Tailscale          Tailscale
+	PairClient         PairClient
+	PeerStore          PeerStore
+	AccessAuthorizer   AccessAuthorizer
+	LocalhostBridge    LocalhostBridge
+	NetworkDiagnostics NetworkDiagnostics
+	SecretLabel        string
+	DeviceID           string
+	DeviceName         string
 }
 
 type Manager struct {
-	tailscale        Tailscale
-	pairClient       PairClient
-	peerStore        PeerStore
-	accessAuthorizer AccessAuthorizer
-	localhostBridge  LocalhostBridge
-	secretLabel      string
-	deviceID         string
-	deviceName       string
+	tailscale          Tailscale
+	pairClient         PairClient
+	peerStore          PeerStore
+	accessAuthorizer   AccessAuthorizer
+	localhostBridge    LocalhostBridge
+	networkDiagnostics NetworkDiagnostics
+	secretLabel        string
+	deviceID           string
+	deviceName         string
 
 	authMu          sync.RWMutex
 	controlMu       sync.Mutex
@@ -45,6 +48,9 @@ type Manager struct {
 	controlListener net.Listener
 	bridgeCancel    context.CancelFunc
 	peerMu          sync.Mutex
+	networkMu       sync.Mutex
+	activeBypass    netdiag.ActiveBypass
+	hasActiveBypass bool
 }
 
 type PairedPeer = direct.PairedPeer
@@ -64,6 +70,12 @@ type LocalhostBridge interface {
 	ActivePorts() []int
 	ConflictPorts() []int
 	Close() error
+}
+
+type NetworkDiagnostics interface {
+	DiagnosePeer(context.Context, string) (netdiag.PeerPathReport, error)
+	ApplyBypass(context.Context, netdiag.BypassRequest) (netdiag.ActiveBypass, error)
+	ClearBypass(context.Context, netdiag.ActiveBypass) error
 }
 
 type TrustedPeerAccess struct {
@@ -90,14 +102,15 @@ type ReadyState struct {
 
 func New(config Config) *Manager {
 	return &Manager{
-		tailscale:        config.Tailscale,
-		pairClient:       config.PairClient,
-		peerStore:        config.PeerStore,
-		accessAuthorizer: config.AccessAuthorizer,
-		localhostBridge:  config.LocalhostBridge,
-		secretLabel:      config.SecretLabel,
-		deviceID:         config.DeviceID,
-		deviceName:       config.DeviceName,
+		tailscale:          config.Tailscale,
+		pairClient:         config.PairClient,
+		peerStore:          config.PeerStore,
+		accessAuthorizer:   config.AccessAuthorizer,
+		localhostBridge:    config.LocalhostBridge,
+		networkDiagnostics: config.NetworkDiagnostics,
+		secretLabel:        config.SecretLabel,
+		deviceID:           config.DeviceID,
+		deviceName:         config.DeviceName,
 	}
 }
 
@@ -328,6 +341,55 @@ func (m *Manager) LocalhostBridgeConflictPorts() []int {
 		return nil
 	}
 	return m.localhostBridge.ConflictPorts()
+}
+
+func (m *Manager) NetworkPath(ctx context.Context, peerTailscaleIP string) (netdiag.PeerPathReport, error) {
+	if m.networkDiagnostics == nil {
+		return netdiag.PeerPathReport{}, errors.New("network diagnostics is not configured")
+	}
+	return m.networkDiagnostics.DiagnosePeer(ctx, peerTailscaleIP)
+}
+
+func (m *Manager) ApplyNetworkBypass(ctx context.Context, request netdiag.BypassRequest) (netdiag.ActiveBypass, error) {
+	if m.networkDiagnostics == nil {
+		return netdiag.ActiveBypass{}, errors.New("network diagnostics is not configured")
+	}
+	active, err := m.networkDiagnostics.ApplyBypass(ctx, request)
+	if err != nil {
+		return netdiag.ActiveBypass{}, err
+	}
+	m.networkMu.Lock()
+	m.activeBypass = active
+	m.hasActiveBypass = true
+	m.networkMu.Unlock()
+	return active, nil
+}
+
+func (m *Manager) ClearNetworkBypass(ctx context.Context) error {
+	if m.networkDiagnostics == nil {
+		return errors.New("network diagnostics is not configured")
+	}
+	m.networkMu.Lock()
+	active := m.activeBypass
+	hasActive := m.hasActiveBypass
+	m.networkMu.Unlock()
+	if !hasActive {
+		return nil
+	}
+	if err := m.networkDiagnostics.ClearBypass(ctx, active); err != nil {
+		return err
+	}
+	m.networkMu.Lock()
+	m.activeBypass = netdiag.ActiveBypass{}
+	m.hasActiveBypass = false
+	m.networkMu.Unlock()
+	return nil
+}
+
+func (m *Manager) ActiveNetworkBypass() (netdiag.ActiveBypass, bool) {
+	m.networkMu.Lock()
+	defer m.networkMu.Unlock()
+	return m.activeBypass, m.hasActiveBypass
 }
 
 func (m *Manager) startLocalhostBridgePolling(ctx context.Context, localIP string) {

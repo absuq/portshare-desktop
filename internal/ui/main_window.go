@@ -17,6 +17,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	directmanager "github.com/absuq/portshare-desktop/internal/direct/manager"
+	"github.com/absuq/portshare-desktop/internal/netdiag"
 )
 
 func (a *App) buildMainWindow() fyne.Window {
@@ -25,6 +26,8 @@ func (a *App) buildMainWindow() fyne.Window {
 
 	var state DirectState
 	var selectedPeerID string
+	var selectedCandidateIndex = -1
+	var candidateOptions []string
 	var render func()
 
 	statusLabel := widget.NewLabel("Tailscale：未检测")
@@ -33,8 +36,11 @@ func (a *App) buildMainWindow() fyne.Window {
 	controlLabel := widget.NewLabel("portshare：未启用")
 	bridgeLabel := widget.NewLabel("localhost 桥接：无")
 	bridgeConflictLabel := widget.NewLabel("localhost 冲突：无")
+	networkPathLabel := widget.NewLabel("网络路径：未检测")
+	networkRouteLabel := widget.NewLabel("当前出口：-")
+	bypassLabel := widget.NewLabel("临时绕过：未启用")
 	messageLabel := widget.NewLabel("准备就绪")
-	for _, label := range []*widget.Label{statusLabel, ipLabel, controlLabel, bridgeLabel, bridgeConflictLabel, messageLabel} {
+	for _, label := range []*widget.Label{statusLabel, ipLabel, controlLabel, bridgeLabel, bridgeConflictLabel, networkPathLabel, networkRouteLabel, bypassLabel, messageLabel} {
 		label.Wrapping = fyne.TextWrapWord
 	}
 
@@ -42,6 +48,10 @@ func (a *App) buildMainWindow() fyne.Window {
 	secretEntry.SetPlaceHolder("共享密钥")
 	peerEntry := widget.NewEntry()
 	peerEntry.SetPlaceHolder("对方 Tailscale IP 或 MagicDNS")
+	candidateSelect := widget.NewSelect(nil, func(value string) {
+		selectedCandidateIndex = indexOfString(candidateOptions, value)
+	})
+	candidateSelect.PlaceHolder = "选择公网出口"
 
 	peers := widget.NewList(
 		func() int { return len(state.Peers) },
@@ -136,9 +146,34 @@ func (a *App) buildMainWindow() fyne.Window {
 			return nil
 		})
 	})
+	detectNetworkButton := widget.NewButton("检测网络路径", func() {
+		withTimeout(func(ctx context.Context) error {
+			peerIP := selectedPeerTailscaleIP(state.Peers, selectedPeerID, peerEntry.Text)
+			if peerIP == "" {
+				return errors.New("请先选择可信设备或输入对方 Tailscale IP")
+			}
+			return a.directCtrl.DetectNetworkPath(ctx, peerIP)
+		})
+	})
+	applyBypassButton := widget.NewButton("临时绕过代理", func() {
+		withTimeout(func(ctx context.Context) error {
+			return a.directCtrl.ApplyNetworkBypass(ctx, selectedCandidateIndex)
+		})
+	})
+	clearBypassButton := widget.NewButton("撤销绕过", func() {
+		withTimeout(func(ctx context.Context) error {
+			return a.directCtrl.ClearNetworkBypass(ctx)
+		})
+	})
 
 	render = func() {
 		state = a.directCtrl.State()
+		if selectedPeerID == "" && len(state.Peers) > 0 {
+			selectedPeerID = state.Peers[0].ID
+		}
+		if !hasPeer(state.Peers, selectedPeerID) {
+			selectedPeerID = ""
+		}
 		if state.Ready {
 			statusLabel.SetText("Tailscale：ready")
 		} else {
@@ -152,20 +187,34 @@ func (a *App) buildMainWindow() fyne.Window {
 		}
 		bridgeLabel.SetText(localhostBridgeStatusText(state))
 		bridgeConflictLabel.SetText(localhostBridgeConflictStatusText(state))
+		networkPathLabel.SetText(networkPathStatusText(state))
+		networkRouteLabel.SetText(networkRouteDetailText(state))
+		bypassLabel.SetText(activeBypassStatusText(state))
+
+		options := egressCandidateOptions(state.NetworkPath.Candidates)
+		candidateOptions = options
+		candidateSelect.SetOptions(options)
+		if len(options) == 0 {
+			selectedCandidateIndex = -1
+			candidateSelect.ClearSelected()
+			candidateSelect.Disable()
+		} else {
+			candidateSelect.Enable()
+			if selectedCandidateIndex < 0 || selectedCandidateIndex >= len(options) {
+				selectedCandidateIndex = recommendedCandidateIndex(state.NetworkPath.Candidates)
+			}
+			if selectedCandidateIndex >= 0 && selectedCandidateIndex < len(options) {
+				candidateSelect.SetSelected(options[selectedCandidateIndex])
+			}
+		}
 		if state.Message != "" {
 			messageLabel.SetText(state.Message)
 		}
 		peers.Refresh()
-		if selectedPeerID == "" && len(state.Peers) > 0 {
-			selectedPeerID = state.Peers[0].ID
-		}
-		if !hasPeer(state.Peers, selectedPeerID) {
-			selectedPeerID = ""
-		}
 	}
 	a.refreshUI = render
 
-	statusBand := container.NewVBox(statusLabel, ipLabel, controlLabel, bridgeLabel, bridgeConflictLabel, messageLabel)
+	statusBand := container.NewVBox(statusLabel, ipLabel, controlLabel, bridgeLabel, bridgeConflictLabel, networkPathLabel, networkRouteLabel, bypassLabel, messageLabel)
 	setupPanel := container.NewVBox(
 		widget.NewLabel("直连密钥"),
 		secretEntry,
@@ -175,6 +224,12 @@ func (a *App) buildMainWindow() fyne.Window {
 		widget.NewLabel("配对"),
 		peerEntry,
 		pairButton,
+		widget.NewSeparator(),
+		widget.NewLabel("网络路径"),
+		detectNetworkButton,
+		candidateSelect,
+		applyBypassButton,
+		clearBypassButton,
 	)
 	peerPanel := container.NewBorder(
 		container.NewVBox(widget.NewLabel("可信设备")),
@@ -275,4 +330,86 @@ func localhostBridgeConflictStatusText(state DirectState) string {
 		parts = append(parts, strconv.Itoa(port))
 	}
 	return "localhost 冲突：" + strings.Join(parts, ", ") + " 原生监听，未桥接"
+}
+
+func networkRouteDetailText(state DirectState) string {
+	report := state.NetworkPath
+	if report.Endpoint == "" && report.CurrentRoute.InterfaceAlias == "" {
+		return "当前出口：-"
+	}
+	parts := []string{}
+	if report.Endpoint != "" {
+		parts = append(parts, "endpoint "+report.Endpoint)
+	}
+	if report.CurrentRoute.InterfaceAlias != "" {
+		route := report.CurrentRoute.InterfaceAlias
+		if report.CurrentRoute.NextHop != "" {
+			route += " -> " + report.CurrentRoute.NextHop
+		}
+		parts = append(parts, route)
+	}
+	return "当前出口：" + strings.Join(parts, " · ")
+}
+
+func activeBypassStatusText(state DirectState) string {
+	if !state.HasActiveBypass {
+		return "临时绕过：未启用"
+	}
+	return "临时绕过：" + state.ActiveBypass.EndpointIP + " -> " + state.ActiveBypass.NextHop
+}
+
+func egressCandidateOptions(candidates []netdiag.EgressCandidate) []string {
+	options := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		label := candidate.InterfaceAlias + " -> " + candidate.NextHop
+		if candidate.InterfaceIP != "" {
+			label += " (" + candidate.InterfaceIP + ")"
+		}
+		if candidate.Recommended {
+			label += " 推荐"
+		}
+		if candidate.SuspectedProxy {
+			label += " 疑似代理"
+		}
+		options = append(options, label)
+	}
+	return options
+}
+
+func recommendedCandidateIndex(candidates []netdiag.EgressCandidate) int {
+	for i, candidate := range candidates {
+		if candidate.Recommended {
+			return i
+		}
+	}
+	if len(candidates) == 0 {
+		return -1
+	}
+	return 0
+}
+
+func indexOfString(values []string, value string) int {
+	for i, item := range values {
+		if item == value {
+			return i
+		}
+	}
+	return -1
+}
+
+func selectedPeerTailscaleIP(peers []directmanager.TrustedPeer, selectedPeerID string, fallback string) string {
+	for _, peer := range peers {
+		if peer.ID == selectedPeerID {
+			return strings.TrimSpace(peer.TailscaleIP)
+		}
+	}
+	address, err := normalizePeerControlAddress(fallback)
+	if err != nil {
+		return strings.TrimSpace(fallback)
+	}
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return strings.TrimSpace(fallback)
+	}
+	return strings.Trim(host, "[]")
 }

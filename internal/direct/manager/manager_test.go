@@ -10,6 +10,7 @@ import (
 
 	direct "github.com/absuq/portshare-desktop/internal/direct"
 	"github.com/absuq/portshare-desktop/internal/direct/store"
+	"github.com/absuq/portshare-desktop/internal/netdiag"
 	"github.com/absuq/portshare-desktop/internal/tailscale"
 )
 
@@ -70,6 +71,38 @@ type fakeLocalhostBridge struct {
 	closed   bool
 	active   []int
 	refreshC chan struct{}
+}
+
+type fakeNetworkDiagnostics struct {
+	report       netdiag.PeerPathReport
+	reportPeer   string
+	applyRequest netdiag.BypassRequest
+	active       netdiag.ActiveBypass
+	cleared      netdiag.ActiveBypass
+}
+
+func (f *fakeNetworkDiagnostics) DiagnosePeer(_ context.Context, peer string) (netdiag.PeerPathReport, error) {
+	f.reportPeer = peer
+	return f.report, nil
+}
+
+func (f *fakeNetworkDiagnostics) ApplyBypass(_ context.Context, request netdiag.BypassRequest) (netdiag.ActiveBypass, error) {
+	f.applyRequest = request
+	if f.active.EndpointIP == "" {
+		f.active = netdiag.ActiveBypass{
+			PeerTailscaleIP: request.PeerTailscaleIP,
+			EndpointIP:      request.EndpointIP,
+			InterfaceIndex:  request.Candidate.InterfaceIndex,
+			NextHop:         request.Candidate.NextHop,
+			CreatedAt:       time.Now().UTC(),
+		}
+	}
+	return f.active, nil
+}
+
+func (f *fakeNetworkDiagnostics) ClearBypass(_ context.Context, bypass netdiag.ActiveBypass) error {
+	f.cleared = bypass
+	return nil
 }
 
 func (b *fakeLocalhostBridge) SetLocalTailscaleIP(ip string) {
@@ -358,6 +391,58 @@ func TestPairPeerRefreshesLocalhostBridgePeers(t *testing.T) {
 	localIP, peers, refresh, _ := bridge.Snapshot()
 	if localIP != "100.79.83.104" || len(peers) != 1 || peers[0] != "100.109.251.97" || refresh == 0 {
 		t.Fatalf("unexpected bridge state after pair: localIP=%q peers=%+v refresh=%d", localIP, peers, refresh)
+	}
+}
+
+func TestNetworkPathDelegatesToDiagnostics(t *testing.T) {
+	diag := &fakeNetworkDiagnostics{report: netdiag.PeerPathReport{
+		PeerTailscaleIP: "100.109.251.97",
+		Status:          netdiag.PathDirectProxy,
+		EndpointIP:      "115.233.222.82",
+	}}
+	m := New(Config{NetworkDiagnostics: diag})
+
+	report, err := m.NetworkPath(context.Background(), "100.109.251.97")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diag.reportPeer != "100.109.251.97" || report.EndpointIP != "115.233.222.82" {
+		t.Fatalf("unexpected network path delegation: peer=%q report=%+v", diag.reportPeer, report)
+	}
+}
+
+func TestApplyAndClearNetworkBypassStoresActiveRoute(t *testing.T) {
+	diag := &fakeNetworkDiagnostics{}
+	m := New(Config{NetworkDiagnostics: diag})
+	request := netdiag.BypassRequest{
+		PeerTailscaleIP: "100.109.251.97",
+		EndpointIP:      "115.233.222.82",
+		Candidate: netdiag.EgressCandidate{
+			InterfaceIndex: 15,
+			NextHop:        "192.168.1.1",
+		},
+	}
+
+	active, err := m.ApplyNetworkBypass(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active.EndpointIP != "115.233.222.82" || diag.applyRequest.EndpointIP != "115.233.222.82" {
+		t.Fatalf("unexpected active bypass: active=%+v request=%+v", active, diag.applyRequest)
+	}
+	stored, ok := m.ActiveNetworkBypass()
+	if !ok || stored.EndpointIP != active.EndpointIP {
+		t.Fatalf("expected active bypass to be stored, got ok=%v stored=%+v", ok, stored)
+	}
+
+	if err := m.ClearNetworkBypass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if diag.cleared.EndpointIP != "115.233.222.82" {
+		t.Fatalf("expected stored route to be cleared, got %+v", diag.cleared)
+	}
+	if _, ok := m.ActiveNetworkBypass(); ok {
+		t.Fatal("expected active bypass to be cleared")
 	}
 }
 

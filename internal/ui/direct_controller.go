@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	directmanager "github.com/absuq/portshare-desktop/internal/direct/manager"
+	"github.com/absuq/portshare-desktop/internal/netdiag"
 	"github.com/absuq/portshare-desktop/internal/tailscale"
 )
 
@@ -29,6 +30,10 @@ type DirectManager interface {
 	ControlAddress() string
 	LocalhostBridgePorts() []int
 	LocalhostBridgeConflictPorts() []int
+	NetworkPath(context.Context, string) (netdiag.PeerPathReport, error)
+	ApplyNetworkBypass(context.Context, netdiag.BypassRequest) (netdiag.ActiveBypass, error)
+	ClearNetworkBypass(context.Context) error
+	ActiveNetworkBypass() (netdiag.ActiveBypass, bool)
 	PairPeer(context.Context, string) (directmanager.PairedPeer, error)
 	TrustedPeers(context.Context) ([]directmanager.TrustedPeer, error)
 }
@@ -45,6 +50,9 @@ type DirectState struct {
 	ControlAddress               string
 	LocalhostBridgePorts         []int
 	LocalhostBridgeConflictPorts []int
+	NetworkPath                  netdiag.PeerPathReport
+	ActiveBypass                 netdiag.ActiveBypass
+	HasActiveBypass              bool
 	DiagnosticCode               tailscale.DiagnosticCode
 	Message                      string
 	Peers                        []directmanager.TrustedPeer
@@ -111,6 +119,7 @@ func (c *DirectController) Refresh(ctx context.Context) error {
 	c.updateControlState()
 	c.state.LocalhostBridgePorts = copyInts(c.manager.LocalhostBridgePorts())
 	c.state.LocalhostBridgeConflictPorts = copyInts(c.manager.LocalhostBridgeConflictPorts())
+	c.state.ActiveBypass, c.state.HasActiveBypass = c.manager.ActiveNetworkBypass()
 	peers, err := c.manager.TrustedPeers(ctx)
 	if err != nil {
 		c.state.Message = "读取可信设备失败：" + err.Error()
@@ -126,6 +135,71 @@ func (c *DirectController) Refresh(ctx context.Context) error {
 	} else {
 		c.state.Message = ready.Message
 	}
+	return nil
+}
+
+func (c *DirectController) DetectNetworkPath(ctx context.Context, peerIP string) error {
+	if err := c.requireManager(); err != nil {
+		return err
+	}
+	peerIP = strings.TrimSpace(peerIP)
+	if peerIP == "" {
+		err := errors.New("请选择一个可信设备")
+		c.state.Message = err.Error()
+		return err
+	}
+	report, err := c.manager.NetworkPath(ctx, peerIP)
+	if err != nil {
+		c.state.NetworkPath = report
+		c.state.Message = "网络路径检测失败：" + err.Error()
+		return err
+	}
+	c.state.NetworkPath = copyNetworkPathReport(report)
+	c.state.Message = networkPathStatusText(c.state)
+	return nil
+}
+
+func (c *DirectController) ApplyNetworkBypass(ctx context.Context, candidateIndex int) error {
+	if err := c.requireManager(); err != nil {
+		return err
+	}
+	report := c.state.NetworkPath
+	if report.EndpointIP == "" {
+		err := errors.New("请先检测网络路径，确认 Tailscale 直连 endpoint")
+		c.state.Message = err.Error()
+		return err
+	}
+	if candidateIndex < 0 || candidateIndex >= len(report.Candidates) {
+		err := errors.New("请选择一个公网出口")
+		c.state.Message = err.Error()
+		return err
+	}
+	active, err := c.manager.ApplyNetworkBypass(ctx, netdiag.BypassRequest{
+		PeerTailscaleIP: report.PeerTailscaleIP,
+		EndpointIP:      report.EndpointIP,
+		Candidate:       report.Candidates[candidateIndex],
+	})
+	if err != nil {
+		c.state.Message = "临时绕过代理失败：" + err.Error()
+		return err
+	}
+	c.state.ActiveBypass = active
+	c.state.HasActiveBypass = true
+	c.state.Message = "已临时绕过代理：" + active.EndpointIP
+	return nil
+}
+
+func (c *DirectController) ClearNetworkBypass(ctx context.Context) error {
+	if err := c.requireManager(); err != nil {
+		return err
+	}
+	if err := c.manager.ClearNetworkBypass(ctx); err != nil {
+		c.state.Message = "撤销绕过失败：" + err.Error()
+		return err
+	}
+	c.state.ActiveBypass = netdiag.ActiveBypass{}
+	c.state.HasActiveBypass = false
+	c.state.Message = "已撤销临时绕过"
 	return nil
 }
 
@@ -189,6 +263,7 @@ func (c *DirectController) State() DirectState {
 	state.Peers = copyTrustedPeers(state.Peers)
 	state.LocalhostBridgePorts = copyInts(state.LocalhostBridgePorts)
 	state.LocalhostBridgeConflictPorts = copyInts(state.LocalhostBridgeConflictPorts)
+	state.NetworkPath = copyNetworkPathReport(state.NetworkPath)
 	return state
 }
 
@@ -287,4 +362,43 @@ func copyTrustedPeers(peers []directmanager.TrustedPeer) []directmanager.Trusted
 
 func copyInts(values []int) []int {
 	return append([]int(nil), values...)
+}
+
+func copyNetworkPathReport(report netdiag.PeerPathReport) netdiag.PeerPathReport {
+	report.Candidates = append([]netdiag.EgressCandidate(nil), report.Candidates...)
+	return report
+}
+
+func networkPathStatusText(state DirectState) string {
+	report := state.NetworkPath
+	switch report.Status {
+	case netdiag.PathDirectNormal:
+		return networkPathSummary("网络路径：直连正常", report)
+	case netdiag.PathDirectProxy:
+		return networkPathSummary("网络路径：直连但疑似代理绕路", report)
+	case netdiag.PathDERP:
+		return networkPathSummary("网络路径：DERP 中继", report)
+	case netdiag.PathFailed:
+		return networkPathSummary("网络路径：检测失败", report)
+	default:
+		return "网络路径：未检测"
+	}
+}
+
+func networkPathSummary(prefix string, report netdiag.PeerPathReport) string {
+	parts := []string{prefix}
+	if report.Endpoint != "" {
+		parts = append(parts, report.Endpoint)
+	}
+	if report.Latency != "" {
+		parts = append(parts, report.Latency)
+	}
+	if report.CurrentRoute.InterfaceAlias != "" {
+		route := report.CurrentRoute.InterfaceAlias
+		if report.CurrentRoute.NextHop != "" {
+			route += " -> " + report.CurrentRoute.NextHop
+		}
+		parts = append(parts, route)
+	}
+	return strings.Join(parts, " · ")
 }
