@@ -3,7 +3,10 @@ package netdiag
 import (
 	"net"
 	"strings"
+	"time"
 )
+
+const optimizedTUNDirectLatency = 50 * time.Millisecond
 
 func ParsePingRoute(raw []byte) (routeType, endpoint, latency string) {
 	var relayType, relayEndpoint, relayLatency string
@@ -108,6 +111,9 @@ func ClassifyPath(routeType string, latency string, current RouteInfo) PathStatu
 	switch routeType {
 	case RouteDirect:
 		if IsSuspectedProxyInterface(current.InterfaceAlias) {
+			if isOptimizedDirectLatency(latency) {
+				return PathDirectTUNOptimized
+			}
 			return PathDirectProxy
 		}
 		return PathDirectNormal
@@ -116,6 +122,14 @@ func ClassifyPath(routeType string, latency string, current RouteInfo) PathStatu
 	default:
 		return PathUnknown
 	}
+}
+
+func isOptimizedDirectLatency(latency string) bool {
+	duration, err := time.ParseDuration(strings.TrimSpace(latency))
+	if err != nil || duration <= 0 {
+		return false
+	}
+	return duration <= optimizedTUNDirectLatency
 }
 
 func parsePingLine(line string) (routeType, endpoint, latency string, ok bool) {

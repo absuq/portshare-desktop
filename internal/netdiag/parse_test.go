@@ -92,6 +92,13 @@ func TestClassifyPathDetectsDirectProxy(t *testing.T) {
 
 func TestClassifyPathDetectsProxyInterfaceEvenWhenFast(t *testing.T) {
 	status := ClassifyPath(RouteDirect, "11ms", RouteInfo{InterfaceAlias: "Meta"})
+	if status != PathDirectTUNOptimized {
+		t.Fatalf("expected optimized TUN path, got %s", status)
+	}
+}
+
+func TestClassifyPathKeepsProxyWarningWhenTUNLatencyIsHigh(t *testing.T) {
+	status := ClassifyPath(RouteDirect, "88ms", RouteInfo{InterfaceAlias: "Meta"})
 	if status != PathDirectProxy {
 		t.Fatalf("expected proxy path, got %s", status)
 	}

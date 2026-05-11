@@ -5,11 +5,12 @@ import "time"
 type PathStatus string
 
 const (
-	PathUnknown      PathStatus = "unknown"
-	PathDirectNormal PathStatus = "direct-normal"
-	PathDirectProxy  PathStatus = "direct-proxy"
-	PathDERP         PathStatus = "derp"
-	PathFailed       PathStatus = "failed"
+	PathUnknown            PathStatus = "unknown"
+	PathDirectNormal       PathStatus = "direct-normal"
+	PathDirectProxy        PathStatus = "direct-proxy"
+	PathDirectTUNOptimized PathStatus = "direct-tun-optimized"
+	PathDERP               PathStatus = "derp"
+	PathFailed             PathStatus = "failed"
 )
 
 const (

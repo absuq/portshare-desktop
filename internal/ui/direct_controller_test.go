@@ -719,6 +719,19 @@ func TestNetworkPathStatusTextShowsProxyWarning(t *testing.T) {
 	}
 }
 
+func TestNetworkPathStatusTextShowsOptimizedTUNDirect(t *testing.T) {
+	state := DirectState{NetworkPath: netdiag.PeerPathReport{
+		Status:       netdiag.PathDirectTUNOptimized,
+		Endpoint:     "115.233.222.82:52477",
+		Latency:      "15ms",
+		CurrentRoute: netdiag.RouteInfo{InterfaceAlias: "Meta", NextHop: "198.18.0.2"},
+	}}
+	got := networkPathStatusText(state)
+	if !strings.Contains(got, "TUN") || !strings.Contains(got, "15ms") {
+		t.Fatalf("unexpected optimized TUN status text: %q", got)
+	}
+}
+
 func TestEgressCandidateOptionsShowPublicMappingFirst(t *testing.T) {
 	options := egressCandidateOptions([]netdiag.EgressCandidate{{
 		InterfaceAlias: "以太网",

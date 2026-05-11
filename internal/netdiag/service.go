@@ -363,6 +363,8 @@ func pathStatusMessage(status PathStatus) string {
 	switch status {
 	case PathDirectNormal:
 		return "Tailscale 直连正常"
+	case PathDirectTUNOptimized:
+		return "Tailscale 低延迟直连，TUN 已接管但当前路径可用"
 	case PathDirectProxy:
 		return "Tailscale 已直连，但疑似被代理/TUN 接管"
 	case PathDERP:

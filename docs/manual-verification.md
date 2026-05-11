@@ -124,15 +124,16 @@ localhost 冲突：3000 原生监听，未桥接
 
 1. 在 portshare 中选择可信设备，点击“检测网络路径”。
 2. 如果显示 `直连但疑似代理绕路`，查看“当前出口”是否为 `Meta`、`Clash`、`Mihomo`、`TUN` 等虚拟网卡。
-3. 查看候选公网出口，确认同时能看到 IPv4 和 IPv6 默认出口。IPv6 endpoint 应显示为 `/128` 主机路由，IPv4 endpoint 应显示为 `/32` 主机路由。
-4. 选择与当前 endpoint 地址族一致的物理网卡出口，例如：
+3. 如果显示 `TUN 接管但低延迟直连`，说明当前 `tailscale ping` 已经处于低延迟 direct，可先保持现状，不必强制绕过。
+4. 查看候选公网出口，确认同时能看到 IPv4 和 IPv6 默认出口。IPv6 endpoint 应显示为 `/128` 主机路由，IPv4 endpoint 应显示为 `/32` 主机路由。
+5. 选择与当前 endpoint 地址族一致的物理网卡出口，例如：
 
    ```text
    以太网 IPv6 -> fe80::1
    以太网 IPv4 -> 192.168.1.1
    ```
 
-5. 点击“临时绕过代理”，确认 UI 显示类似：
+6. 点击“临时绕过代理”，确认 UI 显示类似：
 
    ```text
    临时路由：IPv6 2401:b60:1b::1033/128 -> fe80::1
@@ -144,8 +145,8 @@ localhost 冲突：3000 原生监听，未桥接
    临时路由：IPv4 115.233.222.82/32 -> 192.168.1.1
    ```
 
-6. 再次点击“检测网络路径”，确认当前出口变为物理网卡，或延迟下降。
-7. 如果延迟变高、变 DERP，或 endpoint 变化，点击“撤销绕过”，重新检测后再选择新的 endpoint 对应出口。
+7. 再次点击“检测网络路径”，确认当前出口变为物理网卡，或延迟下降。
+8. 如果延迟变高、变 DERP，或 endpoint 变化，点击“撤销绕过”，重新检测后再选择新的 endpoint 对应出口。
 
 辅助命令：
 
@@ -162,6 +163,8 @@ Get-NetRoute -DestinationPrefix '0.0.0.0/0','::/0'
 - `tailscale status` 显示 `direct` 只说明内层没有走 DERP；它不保证外层公网路径足够近。
 - 如果 `tailscale netcheck` 看到的公网 IP 在香港，而物理宽带应在浙江/上海附近，通常说明 Tailscale 外层打洞流量被代理/TUN 接管。
 - Clash/Mihomo 的 `PROCESS-NAME,tailscaled.exe,DIRECT` 在 TUN 模式下可能不可靠，因为连接元数据里的进程名可能为空。
+- Clash Verge 的 `mixed-port` 例如 `7897` 是代理入口，不是 external-controller；真实控制口应从配置中的 `external-controller` 或 `external-controller-pipe` 读取。
+- `Find-NetRoute` 显示 endpoint 走 `Meta` 不一定等于高延迟绕路；如果 peer endpoint 已变成双方物理公网 IP 且 `tailscale ping` 低于约 50ms，应按低延迟 direct 处理。
 - MagicDNS 被 fake-ip 影响时，`Resolve-DnsName <peer>.ts.net -Server 100.100.100.100` 能返回正确 100.x，而默认 DNS 可能返回 198.18.x。
 - 最小影响的优化手段不是改默认路由，也不是关闭代理，而是只给当前 Tailscale direct endpoint 添加临时主机路由。
 

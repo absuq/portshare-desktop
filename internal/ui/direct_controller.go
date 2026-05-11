@@ -520,6 +520,8 @@ func networkPathStatusText(state DirectState) string {
 	switch report.Status {
 	case netdiag.PathDirectNormal:
 		return networkPathSummary("网络路径：直连正常", report)
+	case netdiag.PathDirectTUNOptimized:
+		return networkPathSummary("网络路径：TUN 接管但低延迟直连", report)
 	case netdiag.PathDirectProxy:
 		return networkPathSummary("网络路径：直连但疑似代理绕路", report)
 	case netdiag.PathDERP:
