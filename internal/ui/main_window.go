@@ -16,6 +16,7 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 
+	"github.com/absuq/portshare-desktop/internal/clash"
 	directmanager "github.com/absuq/portshare-desktop/internal/direct/manager"
 	"github.com/absuq/portshare-desktop/internal/netdiag"
 )
@@ -28,6 +29,8 @@ func (a *App) buildMainWindow() fyne.Window {
 	var selectedPeerID string
 	var selectedCandidateIndex = -1
 	var candidateOptions []string
+	var selectedClashNodeIndex = -1
+	var clashOptions []string
 	var render func()
 
 	statusLabel := widget.NewLabel("Tailscale：未检测")
@@ -38,9 +41,13 @@ func (a *App) buildMainWindow() fyne.Window {
 	bridgeConflictLabel := widget.NewLabel("localhost 冲突：无")
 	networkPathLabel := widget.NewLabel("网络路径：未检测")
 	networkRouteLabel := widget.NewLabel("当前出口：-")
-	bypassLabel := widget.NewLabel("临时绕过：未启用")
+	bypassLabel := widget.NewLabel("临时路由：未启用")
+	clashTunLabel := widget.NewLabel("TUN：未检测")
+	clashPortsLabel := widget.NewLabel("代理入口：未检测")
+	clashControlLabel := widget.NewLabel("控制接口：未检测")
+	clashResultLabel := widget.NewLabel("出口优化：未应用")
 	messageLabel := widget.NewLabel("准备就绪")
-	for _, label := range []*widget.Label{statusLabel, ipLabel, controlLabel, bridgeLabel, bridgeConflictLabel, networkPathLabel, networkRouteLabel, bypassLabel, messageLabel} {
+	for _, label := range []*widget.Label{statusLabel, ipLabel, controlLabel, bridgeLabel, bridgeConflictLabel, networkPathLabel, networkRouteLabel, bypassLabel, clashTunLabel, clashPortsLabel, clashControlLabel, clashResultLabel, messageLabel} {
 		label.Wrapping = fyne.TextWrapWord
 	}
 
@@ -52,6 +59,10 @@ func (a *App) buildMainWindow() fyne.Window {
 		selectedCandidateIndex = indexOfString(candidateOptions, value)
 	})
 	candidateSelect.PlaceHolder = "选择公网出口"
+	clashNodeSelect := widget.NewSelect(nil, func(value string) {
+		selectedClashNodeIndex = indexOfString(clashOptions, value)
+	})
+	clashNodeSelect.PlaceHolder = "选择代理出口节点"
 
 	peers := widget.NewList(
 		func() int { return len(state.Peers) },
@@ -165,6 +176,27 @@ func (a *App) buildMainWindow() fyne.Window {
 			return a.directCtrl.ClearNetworkBypass(ctx)
 		})
 	})
+	detectClashButton := widget.NewButton("检测代理/TUN", func() {
+		withTimeout(func(ctx context.Context) error {
+			return a.directCtrl.DetectClash(ctx)
+		})
+	})
+	refreshClashNodesButton := widget.NewButton("刷新节点延迟", func() {
+		withTimeout(func(ctx context.Context) error {
+			return a.directCtrl.RefreshClashNodes(ctx)
+		})
+	})
+	applyClashNodeButton := widget.NewButton("应用出口节点", func() {
+		withTimeout(func(ctx context.Context) error {
+			peerIP := selectedPeerTailscaleIP(state.Peers, selectedPeerID, peerEntry.Text)
+			return a.directCtrl.ApplyClashNode(ctx, peerIP, selectedClashNodeIndex)
+		})
+	})
+	restoreClashNodeButton := widget.NewButton("恢复原节点", func() {
+		withTimeout(func(ctx context.Context) error {
+			return a.directCtrl.RestoreClashNode(ctx)
+		})
+	})
 
 	render = func() {
 		state = a.directCtrl.State()
@@ -190,6 +222,10 @@ func (a *App) buildMainWindow() fyne.Window {
 		networkPathLabel.SetText(networkPathStatusText(state))
 		networkRouteLabel.SetText(networkRouteDetailText(state))
 		bypassLabel.SetText(activeBypassStatusText(state))
+		clashTunLabel.SetText(clashTUNStatusText(state))
+		clashPortsLabel.SetText(clashProxyPortsText(state))
+		clashControlLabel.SetText(clashControlText(state))
+		clashResultLabel.SetText(clashApplyResultText(state))
 
 		options := egressCandidateOptions(state.NetworkPath.Candidates)
 		candidateOptions = options
@@ -207,6 +243,21 @@ func (a *App) buildMainWindow() fyne.Window {
 				candidateSelect.SetSelected(options[selectedCandidateIndex])
 			}
 		}
+		clashOptions = clashNodeOptions(state.ClashReport.Nodes)
+		clashNodeSelect.SetOptions(clashOptions)
+		if len(clashOptions) == 0 {
+			selectedClashNodeIndex = -1
+			clashNodeSelect.ClearSelected()
+			clashNodeSelect.Disable()
+		} else {
+			clashNodeSelect.Enable()
+			if selectedClashNodeIndex < 0 || selectedClashNodeIndex >= len(clashOptions) {
+				selectedClashNodeIndex = currentClashNodeIndex(state.ClashReport.Nodes)
+			}
+			if selectedClashNodeIndex >= 0 && selectedClashNodeIndex < len(clashOptions) {
+				clashNodeSelect.SetSelected(clashOptions[selectedClashNodeIndex])
+			}
+		}
 		if state.Message != "" {
 			messageLabel.SetText(state.Message)
 		}
@@ -214,7 +265,7 @@ func (a *App) buildMainWindow() fyne.Window {
 	}
 	a.refreshUI = render
 
-	statusBand := container.NewVBox(statusLabel, ipLabel, controlLabel, bridgeLabel, bridgeConflictLabel, networkPathLabel, networkRouteLabel, bypassLabel, messageLabel)
+	statusBand := container.NewVBox(statusLabel, ipLabel, controlLabel, bridgeLabel, bridgeConflictLabel, networkPathLabel, networkRouteLabel, bypassLabel, clashTunLabel, clashPortsLabel, clashControlLabel, clashResultLabel, messageLabel)
 	setupPanel := container.NewVBox(
 		widget.NewLabel("直连密钥"),
 		secretEntry,
@@ -230,6 +281,13 @@ func (a *App) buildMainWindow() fyne.Window {
 		candidateSelect,
 		applyBypassButton,
 		clearBypassButton,
+		widget.NewSeparator(),
+		widget.NewLabel("出口优化"),
+		detectClashButton,
+		refreshClashNodesButton,
+		clashNodeSelect,
+		applyClashNodeButton,
+		restoreClashNodeButton,
 	)
 	peerPanel := container.NewBorder(
 		container.NewVBox(widget.NewLabel("可信设备")),
@@ -353,9 +411,9 @@ func networkRouteDetailText(state DirectState) string {
 
 func activeBypassStatusText(state DirectState) string {
 	if !state.HasActiveBypass {
-		return "临时绕过：未启用"
+		return "临时路由：未启用"
 	}
-	return "临时绕过：" + state.ActiveBypass.EndpointIP + " -> " + state.ActiveBypass.NextHop
+	return "临时路由：" + state.ActiveBypass.EndpointIP + " -> " + state.ActiveBypass.NextHop
 }
 
 func egressCandidateOptions(candidates []netdiag.EgressCandidate) []string {
@@ -425,4 +483,87 @@ func selectedPeerTailscaleIP(peers []directmanager.TrustedPeer, selectedPeerID s
 		return strings.TrimSpace(fallback)
 	}
 	return strings.Trim(host, "[]")
+}
+
+func clashTUNStatusText(state DirectState) string {
+	if len(state.ClashReport.TUNInterfaces) == 0 {
+		return "TUN：未检测"
+	}
+	names := make([]string, 0, len(state.ClashReport.TUNInterfaces))
+	for _, item := range state.ClashReport.TUNInterfaces {
+		if strings.EqualFold(item.Status, "up") || item.Status == "Up" {
+			names = append(names, item.Name+" 已启用")
+		} else {
+			names = append(names, item.Name+" "+item.Status)
+		}
+	}
+	return "TUN：" + strings.Join(names, " / ")
+}
+
+func clashProxyPortsText(state DirectState) string {
+	if len(state.ClashReport.ProxyPorts) == 0 {
+		return "代理入口：未检测"
+	}
+	parts := make([]string, 0, len(state.ClashReport.ProxyPorts))
+	for _, port := range state.ClashReport.ProxyPorts {
+		parts = append(parts, fmt.Sprintf("%s %d", port.Kind, port.Port))
+	}
+	return "代理入口：" + strings.Join(parts, " / ")
+}
+
+func clashControlText(state DirectState) string {
+	control := state.ClashReport.Control
+	switch control.Kind {
+	case clash.ControlNamedPipe:
+		return "控制接口：named pipe " + control.Address
+	case clash.ControlHTTP:
+		return "控制接口：" + control.Address
+	default:
+		return "控制接口：未检测"
+	}
+}
+
+func clashApplyResultText(state DirectState) string {
+	result := state.ClashApplyResult
+	if result.NodeName == "" {
+		return "出口优化：未应用"
+	}
+	parts := []string{result.NodeName}
+	if result.RouteType != "" {
+		parts = append(parts, result.RouteType)
+	}
+	if result.Latency != "" {
+		parts = append(parts, result.Latency)
+	}
+	return "出口优化：" + strings.Join(parts, " · ")
+}
+
+func clashNodeOptions(nodes []clash.ProxyNode) []string {
+	options := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		parts := []string{node.Region, node.Name}
+		if node.Delay > 0 {
+			parts = append(parts, fmt.Sprintf("%dms", node.Delay.Milliseconds()))
+		}
+		if node.TailscaleLatency != "" {
+			parts = append(parts, "Tailscale "+node.TailscaleLatency)
+		}
+		if node.Current {
+			parts = append(parts, "当前")
+		}
+		options = append(options, strings.Join(parts, " · "))
+	}
+	return options
+}
+
+func currentClashNodeIndex(nodes []clash.ProxyNode) int {
+	for i, node := range nodes {
+		if node.Current {
+			return i
+		}
+	}
+	if len(nodes) == 0 {
+		return -1
+	}
+	return 0
 }

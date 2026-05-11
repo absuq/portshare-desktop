@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/absuq/portshare-desktop/internal/clash"
 	direct "github.com/absuq/portshare-desktop/internal/direct"
 	"github.com/absuq/portshare-desktop/internal/direct/store"
 	"github.com/absuq/portshare-desktop/internal/netdiag"
@@ -102,6 +103,38 @@ func (f *fakeNetworkDiagnostics) ApplyBypass(_ context.Context, request netdiag.
 
 func (f *fakeNetworkDiagnostics) ClearBypass(_ context.Context, bypass netdiag.ActiveBypass) error {
 	f.cleared = bypass
+	return nil
+}
+
+type fakeClashEgress struct {
+	report       clash.DiscoveryReport
+	applyRequest clash.ApplyRequest
+	applyResult  clash.ApplyResult
+	restored     bool
+}
+
+func (f *fakeClashEgress) Discover(ctx context.Context) (clash.DiscoveryReport, error) {
+	_ = ctx
+	return f.report, nil
+}
+
+func (f *fakeClashEgress) RefreshNodes(ctx context.Context) (clash.DiscoveryReport, error) {
+	_ = ctx
+	return f.report, nil
+}
+
+func (f *fakeClashEgress) ApplyNode(ctx context.Context, request clash.ApplyRequest) (clash.ApplyResult, error) {
+	_ = ctx
+	f.applyRequest = request
+	if f.applyResult.NodeName == "" {
+		f.applyResult = clash.ApplyResult{GroupName: request.GroupName, NodeName: request.NodeName, RouteType: "direct", Latency: "25ms"}
+	}
+	return f.applyResult, nil
+}
+
+func (f *fakeClashEgress) RestoreNode(ctx context.Context) error {
+	_ = ctx
+	f.restored = true
 	return nil
 }
 
@@ -443,6 +476,52 @@ func TestApplyAndClearNetworkBypassStoresActiveRoute(t *testing.T) {
 	}
 	if _, ok := m.ActiveNetworkBypass(); ok {
 		t.Fatal("expected active bypass to be cleared")
+	}
+}
+
+func TestClashEgressDelegatesDiscoveryAndNodeSelection(t *testing.T) {
+	egress := &fakeClashEgress{report: clash.DiscoveryReport{
+		Control: clash.ControlEndpoint{Kind: clash.ControlNamedPipe, Address: `\\.\pipe\verge-mihomo`},
+		Nodes: []clash.ProxyNode{{
+			GroupName: "GLOBAL",
+			Name:      "上海 01",
+			Region:    "上海",
+		}},
+	}}
+	m := New(Config{ClashEgress: egress})
+
+	report, err := m.DetectClash(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Control.Kind != clash.ControlNamedPipe {
+		t.Fatalf("unexpected discovery report: %+v", report)
+	}
+
+	nodes, err := m.RefreshClashNodes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes.Nodes) != 1 || nodes.Nodes[0].Name != "上海 01" {
+		t.Fatalf("unexpected nodes: %+v", nodes.Nodes)
+	}
+
+	result, err := m.ApplyClashNode(context.Background(), clash.ApplyRequest{
+		PeerTailscaleIP: "100.109.251.97",
+		GroupName:       "GLOBAL",
+		NodeName:        "上海 01",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if egress.applyRequest.NodeName != "上海 01" || result.Latency != "25ms" {
+		t.Fatalf("unexpected apply result: request=%+v result=%+v", egress.applyRequest, result)
+	}
+	if err := m.RestoreClashNode(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !egress.restored {
+		t.Fatal("expected restore to be delegated")
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/absuq/portshare-desktop/internal/clash"
 	directmanager "github.com/absuq/portshare-desktop/internal/direct/manager"
 	"github.com/absuq/portshare-desktop/internal/direct/store"
 	"github.com/absuq/portshare-desktop/internal/netdiag"
@@ -28,6 +29,10 @@ type fakeDirectManager struct {
 	applyRequest       netdiag.BypassRequest
 	activeBypass       netdiag.ActiveBypass
 	clearBypassCalled  bool
+	clashReport        clash.DiscoveryReport
+	clashApplyRequest  clash.ApplyRequest
+	clashApplyResult   clash.ApplyResult
+	clashRestored      bool
 }
 
 func (f *fakeDirectManager) Ready(context.Context) directmanager.ReadyState {
@@ -111,6 +116,32 @@ func (f *fakeDirectManager) ActiveNetworkBypass() (netdiag.ActiveBypass, bool) {
 	return f.activeBypass, true
 }
 
+func (f *fakeDirectManager) DetectClash(context.Context) (clash.DiscoveryReport, error) {
+	return f.clashReport, nil
+}
+
+func (f *fakeDirectManager) RefreshClashNodes(context.Context) (clash.DiscoveryReport, error) {
+	return f.clashReport, nil
+}
+
+func (f *fakeDirectManager) ApplyClashNode(_ context.Context, request clash.ApplyRequest) (clash.ApplyResult, error) {
+	f.clashApplyRequest = request
+	if f.clashApplyResult.NodeName == "" {
+		f.clashApplyResult = clash.ApplyResult{
+			GroupName: request.GroupName,
+			NodeName:  request.NodeName,
+			RouteType: "direct",
+			Latency:   "25ms",
+		}
+	}
+	return f.clashApplyResult, nil
+}
+
+func (f *fakeDirectManager) RestoreClashNode(context.Context) error {
+	f.clashRestored = true
+	return nil
+}
+
 func TestDirectControllerRefreshShowsReadyState(t *testing.T) {
 	mgr := &fakeDirectManager{ready: directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104", Code: tailscale.CodeOK}}
 	ctrl := NewDirectController(mgr)
@@ -192,6 +223,53 @@ func TestDirectControllerApplyAndClearNetworkBypass(t *testing.T) {
 	}
 	if !mgr.clearBypassCalled || ctrl.State().HasActiveBypass {
 		t.Fatalf("expected bypass to be cleared, called=%v state=%+v", mgr.clearBypassCalled, ctrl.State())
+	}
+}
+
+func TestDirectControllerClashActionsUpdateState(t *testing.T) {
+	mgr := &fakeDirectManager{clashReport: clash.DiscoveryReport{
+		Control: clash.ControlEndpoint{Kind: clash.ControlNamedPipe, Address: `\\.\pipe\verge-mihomo`},
+		Nodes: []clash.ProxyNode{{
+			GroupName: "GLOBAL",
+			Name:      "上海 01",
+			Region:    "上海",
+			Delay:     23 * time.Millisecond,
+			Current:   true,
+		}},
+	}}
+	ctrl := NewDirectController(mgr)
+
+	if err := ctrl.DetectClash(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if ctrl.State().ClashReport.Control.Kind != clash.ControlNamedPipe {
+		t.Fatalf("expected clash report in state, got %+v", ctrl.State().ClashReport)
+	}
+	if err := ctrl.RefreshClashNodes(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(ctrl.State().ClashReport.Nodes) != 1 {
+		t.Fatalf("expected node list in state, got %+v", ctrl.State().ClashReport.Nodes)
+	}
+	if err := ctrl.ApplyClashNode(context.Background(), "100.109.251.97", 0); err != nil {
+		t.Fatal(err)
+	}
+	if mgr.clashApplyRequest.NodeName != "上海 01" || ctrl.State().ClashApplyResult.Latency != "25ms" {
+		t.Fatalf("unexpected clash apply: request=%+v state=%+v", mgr.clashApplyRequest, ctrl.State().ClashApplyResult)
+	}
+	if err := ctrl.RestoreClashNode(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !mgr.clashRestored {
+		t.Fatal("expected restore call")
+	}
+}
+
+func TestDirectControllerApplyClashNodeRequiresPeer(t *testing.T) {
+	ctrl := NewDirectController(&fakeDirectManager{clashReport: clash.DiscoveryReport{Nodes: []clash.ProxyNode{{GroupName: "GLOBAL", Name: "上海 01"}}}})
+
+	if err := ctrl.ApplyClashNode(context.Background(), "", 0); err == nil {
+		t.Fatal("expected missing peer to fail")
 	}
 }
 
@@ -542,6 +620,40 @@ func TestEgressCandidateOptionsShowPublicMappingFirst(t *testing.T) {
 	}
 	if !strings.Contains(options[0], "公网 112.10.189.69:1142") || !strings.Contains(options[0], "本机 192.168.1.11") {
 		t.Fatalf("expected option to show public mapping and local IP, got %q", options[0])
+	}
+}
+
+func TestClashStatusTextHelpers(t *testing.T) {
+	report := clash.DiscoveryReport{
+		TUNInterfaces: []clash.TUNInterface{{Name: "Meta", Status: "Up"}},
+		ProxyPorts: []clash.ProxyPort{
+			{Kind: "mixed", Port: 7897},
+			{Kind: "socks", Port: 7898},
+			{Kind: "http", Port: 7899},
+		},
+		Control: clash.ControlEndpoint{Kind: clash.ControlNamedPipe, Address: `\\.\pipe\verge-mihomo`},
+		Nodes: []clash.ProxyNode{{
+			GroupName: "GLOBAL",
+			Name:      "上海 01",
+			Region:    "上海",
+			Delay:     23 * time.Millisecond,
+			Current:   true,
+		}},
+	}
+	state := DirectState{ClashReport: report}
+
+	if got := clashTUNStatusText(state); got != "TUN：Meta 已启用" {
+		t.Fatalf("unexpected TUN text: %q", got)
+	}
+	if got := clashProxyPortsText(state); got != "代理入口：mixed 7897 / socks 7898 / http 7899" {
+		t.Fatalf("unexpected proxy ports text: %q", got)
+	}
+	if got := clashControlText(state); got != `控制接口：named pipe \\.\pipe\verge-mihomo` {
+		t.Fatalf("unexpected control text: %q", got)
+	}
+	options := clashNodeOptions(report.Nodes)
+	if len(options) != 1 || options[0] != "上海 · 上海 01 · 23ms · 当前" {
+		t.Fatalf("unexpected node options: %+v", options)
 	}
 }
 

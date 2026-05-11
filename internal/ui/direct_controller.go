@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/absuq/portshare-desktop/internal/clash"
 	directmanager "github.com/absuq/portshare-desktop/internal/direct/manager"
 	"github.com/absuq/portshare-desktop/internal/netdiag"
 	"github.com/absuq/portshare-desktop/internal/tailscale"
@@ -34,6 +35,10 @@ type DirectManager interface {
 	ApplyNetworkBypass(context.Context, netdiag.BypassRequest) (netdiag.ActiveBypass, error)
 	ClearNetworkBypass(context.Context) error
 	ActiveNetworkBypass() (netdiag.ActiveBypass, bool)
+	DetectClash(context.Context) (clash.DiscoveryReport, error)
+	RefreshClashNodes(context.Context) (clash.DiscoveryReport, error)
+	ApplyClashNode(context.Context, clash.ApplyRequest) (clash.ApplyResult, error)
+	RestoreClashNode(context.Context) error
 	PairPeer(context.Context, string) (directmanager.PairedPeer, error)
 	TrustedPeers(context.Context) ([]directmanager.TrustedPeer, error)
 }
@@ -53,6 +58,8 @@ type DirectState struct {
 	NetworkPath                  netdiag.PeerPathReport
 	ActiveBypass                 netdiag.ActiveBypass
 	HasActiveBypass              bool
+	ClashReport                  clash.DiscoveryReport
+	ClashApplyResult             clash.ApplyResult
 	DiagnosticCode               tailscale.DiagnosticCode
 	Message                      string
 	Peers                        []directmanager.TrustedPeer
@@ -203,6 +210,77 @@ func (c *DirectController) ClearNetworkBypass(ctx context.Context) error {
 	return nil
 }
 
+func (c *DirectController) DetectClash(ctx context.Context) error {
+	if err := c.requireManager(); err != nil {
+		return err
+	}
+	report, err := c.manager.DetectClash(ctx)
+	if err != nil {
+		c.state.Message = "检测代理/TUN 失败：" + err.Error()
+		return err
+	}
+	c.state.ClashReport = copyClashReport(report)
+	c.state.Message = "已检测代理/TUN"
+	return nil
+}
+
+func (c *DirectController) RefreshClashNodes(ctx context.Context) error {
+	if err := c.requireManager(); err != nil {
+		return err
+	}
+	report, err := c.manager.RefreshClashNodes(ctx)
+	if err != nil {
+		c.state.Message = "刷新节点延迟失败：" + err.Error()
+		return err
+	}
+	c.state.ClashReport = copyClashReport(report)
+	c.state.Message = "已刷新节点延迟"
+	return nil
+}
+
+func (c *DirectController) ApplyClashNode(ctx context.Context, peerIP string, nodeIndex int) error {
+	if err := c.requireManager(); err != nil {
+		return err
+	}
+	peerIP = strings.TrimSpace(peerIP)
+	if peerIP == "" {
+		err := errors.New("请选择可信设备或输入对方 Tailscale IP")
+		c.state.Message = err.Error()
+		return err
+	}
+	if nodeIndex < 0 || nodeIndex >= len(c.state.ClashReport.Nodes) {
+		err := errors.New("请选择一个代理出口节点")
+		c.state.Message = err.Error()
+		return err
+	}
+	node := c.state.ClashReport.Nodes[nodeIndex]
+	result, err := c.manager.ApplyClashNode(ctx, clash.ApplyRequest{
+		PeerTailscaleIP: peerIP,
+		GroupName:       node.GroupName,
+		NodeName:        node.Name,
+		PreviousNode:    currentNodeInGroup(c.state.ClashReport.Nodes, node.GroupName),
+	})
+	c.state.ClashApplyResult = result
+	if err != nil {
+		c.state.Message = "应用出口节点失败：" + err.Error()
+		return err
+	}
+	c.state.Message = "已应用出口节点：" + node.Name + " · " + result.Latency
+	return nil
+}
+
+func (c *DirectController) RestoreClashNode(ctx context.Context) error {
+	if err := c.requireManager(); err != nil {
+		return err
+	}
+	if err := c.manager.RestoreClashNode(ctx); err != nil {
+		c.state.Message = "恢复原节点失败：" + err.Error()
+		return err
+	}
+	c.state.Message = "已恢复原节点"
+	return nil
+}
+
 func (c *DirectController) PairPeer(ctx context.Context, peerAddress string) error {
 	if err := c.requireManager(); err != nil {
 		return err
@@ -264,6 +342,7 @@ func (c *DirectController) State() DirectState {
 	state.LocalhostBridgePorts = copyInts(state.LocalhostBridgePorts)
 	state.LocalhostBridgeConflictPorts = copyInts(state.LocalhostBridgeConflictPorts)
 	state.NetworkPath = copyNetworkPathReport(state.NetworkPath)
+	state.ClashReport = copyClashReport(state.ClashReport)
 	return state
 }
 
@@ -367,6 +446,22 @@ func copyInts(values []int) []int {
 func copyNetworkPathReport(report netdiag.PeerPathReport) netdiag.PeerPathReport {
 	report.Candidates = append([]netdiag.EgressCandidate(nil), report.Candidates...)
 	return report
+}
+
+func copyClashReport(report clash.DiscoveryReport) clash.DiscoveryReport {
+	report.TUNInterfaces = append([]clash.TUNInterface(nil), report.TUNInterfaces...)
+	report.ProxyPorts = append([]clash.ProxyPort(nil), report.ProxyPorts...)
+	report.Nodes = append([]clash.ProxyNode(nil), report.Nodes...)
+	return report
+}
+
+func currentNodeInGroup(nodes []clash.ProxyNode, groupName string) string {
+	for _, node := range nodes {
+		if node.GroupName == groupName && node.Current {
+			return node.Name
+		}
+	}
+	return ""
 }
 
 func networkPathStatusText(state DirectState) string {

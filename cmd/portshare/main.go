@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/absuq/portshare-desktop/internal/audit"
+	"github.com/absuq/portshare-desktop/internal/clash"
 	"github.com/absuq/portshare-desktop/internal/config"
 	directmanager "github.com/absuq/portshare-desktop/internal/direct/manager"
 	directstore "github.com/absuq/portshare-desktop/internal/direct/store"
@@ -43,6 +44,7 @@ func main() {
 		AccessAuthorizer:   managerFirewallAuthorizer{inner: firewall.NewAuthorizer(nil)},
 		LocalhostBridge:    localhostbridge.NewController(localhostbridge.Config{Scanner: localhostbridge.NewScanner()}),
 		NetworkDiagnostics: netdiag.NewService(nil),
+		ClashEgress:        clash.NewService(nil, nil),
 		DeviceID:           deviceName,
 		DeviceName:         deviceName,
 	})

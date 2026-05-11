@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/absuq/portshare-desktop/internal/clash"
 	direct "github.com/absuq/portshare-desktop/internal/direct"
 	"github.com/absuq/portshare-desktop/internal/direct/store"
 	"github.com/absuq/portshare-desktop/internal/netdiag"
@@ -26,6 +27,7 @@ type Config struct {
 	AccessAuthorizer   AccessAuthorizer
 	LocalhostBridge    LocalhostBridge
 	NetworkDiagnostics NetworkDiagnostics
+	ClashEgress        ClashEgress
 	SecretLabel        string
 	DeviceID           string
 	DeviceName         string
@@ -38,6 +40,7 @@ type Manager struct {
 	accessAuthorizer   AccessAuthorizer
 	localhostBridge    LocalhostBridge
 	networkDiagnostics NetworkDiagnostics
+	clashEgress        ClashEgress
 	secretLabel        string
 	deviceID           string
 	deviceName         string
@@ -78,6 +81,13 @@ type NetworkDiagnostics interface {
 	ClearBypass(context.Context, netdiag.ActiveBypass) error
 }
 
+type ClashEgress interface {
+	Discover(context.Context) (clash.DiscoveryReport, error)
+	RefreshNodes(context.Context) (clash.DiscoveryReport, error)
+	ApplyNode(context.Context, clash.ApplyRequest) (clash.ApplyResult, error)
+	RestoreNode(context.Context) error
+}
+
 type TrustedPeerAccess struct {
 	RulePrefix       string
 	LocalTailscaleIP string
@@ -108,6 +118,7 @@ func New(config Config) *Manager {
 		accessAuthorizer:   config.AccessAuthorizer,
 		localhostBridge:    config.LocalhostBridge,
 		networkDiagnostics: config.NetworkDiagnostics,
+		clashEgress:        config.ClashEgress,
 		secretLabel:        config.SecretLabel,
 		deviceID:           config.DeviceID,
 		deviceName:         config.DeviceName,
@@ -390,6 +401,34 @@ func (m *Manager) ActiveNetworkBypass() (netdiag.ActiveBypass, bool) {
 	m.networkMu.Lock()
 	defer m.networkMu.Unlock()
 	return m.activeBypass, m.hasActiveBypass
+}
+
+func (m *Manager) DetectClash(ctx context.Context) (clash.DiscoveryReport, error) {
+	if m.clashEgress == nil {
+		return clash.DiscoveryReport{}, errors.New("clash egress is not configured")
+	}
+	return m.clashEgress.Discover(ctx)
+}
+
+func (m *Manager) RefreshClashNodes(ctx context.Context) (clash.DiscoveryReport, error) {
+	if m.clashEgress == nil {
+		return clash.DiscoveryReport{}, errors.New("clash egress is not configured")
+	}
+	return m.clashEgress.RefreshNodes(ctx)
+}
+
+func (m *Manager) ApplyClashNode(ctx context.Context, request clash.ApplyRequest) (clash.ApplyResult, error) {
+	if m.clashEgress == nil {
+		return clash.ApplyResult{}, errors.New("clash egress is not configured")
+	}
+	return m.clashEgress.ApplyNode(ctx, request)
+}
+
+func (m *Manager) RestoreClashNode(ctx context.Context) error {
+	if m.clashEgress == nil {
+		return errors.New("clash egress is not configured")
+	}
+	return m.clashEgress.RestoreNode(ctx)
 }
 
 func (m *Manager) startLocalhostBridgePolling(ctx context.Context, localIP string) {
