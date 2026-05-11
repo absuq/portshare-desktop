@@ -362,8 +362,21 @@ func egressCandidateOptions(candidates []netdiag.EgressCandidate) []string {
 	options := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
 		label := candidate.InterfaceAlias + " -> " + candidate.NextHop
+		details := []string{}
+		if candidate.PublicIPv4 != "" {
+			details = append(details, "公网 "+candidate.PublicIPv4)
+		}
+		if candidate.PublicIPv6 != "" {
+			details = append(details, "公网IPv6 "+candidate.PublicIPv6)
+		}
 		if candidate.InterfaceIP != "" {
-			label += " (" + candidate.InterfaceIP + ")"
+			details = append(details, "本机 "+candidate.InterfaceIP)
+		}
+		if candidate.NetcheckError != "" {
+			details = append(details, "公网检测失败")
+		}
+		if len(details) > 0 {
+			label += " (" + strings.Join(details, " / ") + ")"
 		}
 		if candidate.Recommended {
 			label += " 推荐"

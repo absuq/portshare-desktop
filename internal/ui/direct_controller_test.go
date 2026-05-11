@@ -529,6 +529,22 @@ func TestNetworkPathStatusTextShowsProxyWarning(t *testing.T) {
 	}
 }
 
+func TestEgressCandidateOptionsShowPublicMappingFirst(t *testing.T) {
+	options := egressCandidateOptions([]netdiag.EgressCandidate{{
+		InterfaceAlias: "以太网",
+		InterfaceIP:    "192.168.1.11",
+		NextHop:        "192.168.1.1",
+		PublicIPv4:     "112.10.189.69:1142",
+		Recommended:    true,
+	}})
+	if len(options) != 1 {
+		t.Fatalf("expected one option, got %+v", options)
+	}
+	if !strings.Contains(options[0], "公网 112.10.189.69:1142") || !strings.Contains(options[0], "本机 192.168.1.11") {
+		t.Fatalf("expected option to show public mapping and local IP, got %q", options[0])
+	}
+}
+
 func TestDirectControllerRefreshKeepsPreviousStateOnPeerLoadFailure(t *testing.T) {
 	mgr := &fakeDirectManager{
 		ready: directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104"},

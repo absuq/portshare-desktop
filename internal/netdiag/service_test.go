@@ -25,7 +25,7 @@ func (r *recordingRunner) Run(_ context.Context, name string, args ...string) ([
 
 func TestDiagnosePeerReportsDirectProxyRoute(t *testing.T) {
 	runner := &recordingRunner{outputs: map[string][]byte{
-		"tailscale ping --until-direct=false --c 3 100.109.251.97": []byte("pong from desktop via 115.233.222.82:41641 in 249ms"),
+		"tailscale ping --c 10 100.109.251.97": []byte("pong from desktop via 115.233.222.82:41641 in 249ms"),
 		"Find-NetRoute": []byte(`{
 			"InterfaceAlias":"Meta",
 			"InterfaceIndex":19,
@@ -38,6 +38,8 @@ func TestDiagnosePeerReportsDirectProxyRoute(t *testing.T) {
 			{"InterfaceAlias":"Meta","InterfaceIndex":19,"NextHop":"198.18.0.2","RouteMetric":0,"InterfaceMetric":0,"InterfaceIP":"198.18.0.1"},
 			{"InterfaceAlias":"以太网","InterfaceIndex":15,"NextHop":"192.168.1.1","RouteMetric":0,"InterfaceMetric":25,"InterfaceIP":"192.168.1.11"}
 		]`),
+		"tailscale netcheck --format json --bind-address 198.18.0.1":   []byte(`{"UDP":true,"GlobalV4":"172.105.240.197:43051","GlobalV6":""}`),
+		"tailscale netcheck --format json --bind-address 192.168.1.11": []byte(`{"UDP":true,"GlobalV4":"112.10.189.69:1142","GlobalV6":""}`),
 	}}
 	service := NewService(runner)
 
@@ -58,14 +60,24 @@ func TestDiagnosePeerReportsDirectProxyRoute(t *testing.T) {
 	if report.Candidates[0].InterfaceAlias != "以太网" || !report.Candidates[0].Recommended {
 		t.Fatalf("expected physical ethernet to be first recommended candidate, got %+v", report.Candidates)
 	}
+	if report.Candidates[0].PublicIPv4 != "112.10.189.69:1142" {
+		t.Fatalf("expected physical candidate public mapping, got %+v", report.Candidates[0])
+	}
 	if !report.Candidates[1].SuspectedProxy {
 		t.Fatalf("expected Meta candidate to be marked as proxy, got %+v", report.Candidates[1])
 	}
+	if report.Candidates[1].PublicIPv4 != "172.105.240.197:43051" {
+		t.Fatalf("expected proxy candidate public mapping, got %+v", report.Candidates[1])
+	}
 }
 
-func TestDiagnosePeerDoesNotReadRoutesForDERP(t *testing.T) {
+func TestDiagnosePeerReportsDERPAndStillListsEgressCandidates(t *testing.T) {
 	runner := &recordingRunner{outputs: map[string][]byte{
-		"tailscale ping --until-direct=false --c 3 100.109.251.97": []byte("pong from desktop via DERP(hkg) in 43ms"),
+		"tailscale ping --c 10 100.109.251.97": []byte("pong from desktop via DERP(hkg) in 43ms"),
+		"Get-NetRoute -DestinationPrefix": []byte(`[
+			{"InterfaceAlias":"以太网","InterfaceIndex":15,"NextHop":"192.168.1.1","RouteMetric":0,"InterfaceMetric":25,"InterfaceIP":"192.168.1.11"}
+		]`),
+		"tailscale netcheck --format json --bind-address 192.168.1.11": []byte(`{"UDP":true,"GlobalV4":"112.10.189.69:1142","GlobalV6":""}`),
 	}}
 	service := NewService(runner)
 
@@ -77,7 +89,7 @@ func TestDiagnosePeerDoesNotReadRoutesForDERP(t *testing.T) {
 	if report.Status != PathDERP || report.RouteType != RouteDERP {
 		t.Fatalf("unexpected DERP report: %+v", report)
 	}
-	if len(runner.commands) != 1 {
-		t.Fatalf("expected only tailscale ping command, got %+v", runner.commands)
+	if len(report.Candidates) != 1 || report.Candidates[0].PublicIPv4 != "112.10.189.69:1142" {
+		t.Fatalf("expected DERP report to include egress candidates, got %+v", report.Candidates)
 	}
 }

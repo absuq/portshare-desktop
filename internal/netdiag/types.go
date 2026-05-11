@@ -43,6 +43,10 @@ type EgressCandidate struct {
 	InterfaceIndex  int
 	InterfaceIP     string
 	NextHop         string
+	PublicIPv4      string
+	PublicIPv6      string
+	UDP             bool
+	NetcheckError   string
 	RouteMetric     int
 	InterfaceMetric int
 	SuspectedProxy  bool

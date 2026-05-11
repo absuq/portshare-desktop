@@ -8,7 +8,10 @@ import (
 
 func TestApplyBypassAddsActiveStoreHostRoute(t *testing.T) {
 	runner := &recordingRunner{outputs: map[string][]byte{
-		"New-NetRoute": []byte(""),
+		"New-NetRoute":                   []byte(""),
+		"tailscale debug restun":         []byte(""),
+		"tailscale ping --c 10":          []byte("pong from desktop via 115.233.222.82:41641 in 25ms"),
+		"Find-NetRoute -RemoteIPAddress": []byte(`{"InterfaceAlias":"以太网","InterfaceIndex":15,"NextHop":"192.168.1.1","IPAddress":"192.168.1.11"}`),
 	}}
 	service := NewService(runner)
 
@@ -35,6 +38,61 @@ func TestApplyBypassAddsActiveStoreHostRoute(t *testing.T) {
 	}
 	if strings.Contains(command, "0.0.0.0/0") {
 		t.Fatalf("route command must not change default route: %s", command)
+	}
+}
+
+func TestApplyBypassRollsBackWhenRouteFallsBackToDERP(t *testing.T) {
+	runner := &recordingRunner{outputs: map[string][]byte{
+		"New-NetRoute":           []byte(""),
+		"tailscale debug restun": []byte(""),
+		"tailscale ping --c 10":  []byte("pong from desktop via DERP(sfo) in 341ms"),
+		"Remove-NetRoute":        []byte(""),
+	}}
+	service := NewService(runner)
+
+	_, err := service.ApplyBypass(context.Background(), BypassRequest{
+		PeerTailscaleIP: "100.109.251.97",
+		EndpointIP:      "115.233.222.82",
+		Candidate: EgressCandidate{
+			InterfaceIndex: 15,
+			NextHop:        "192.168.1.1",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected DERP fallback to fail")
+	}
+
+	command := strings.Join(runner.commands, "\n")
+	if !strings.Contains(command, "Remove-NetRoute") {
+		t.Fatalf("expected failed bypass to roll back route, got %s", command)
+	}
+}
+
+func TestApplyBypassRollsBackWhenSelectedInterfaceIsNotUsed(t *testing.T) {
+	runner := &recordingRunner{outputs: map[string][]byte{
+		"New-NetRoute":                   []byte(""),
+		"tailscale debug restun":         []byte(""),
+		"tailscale ping --c 10":          []byte("pong from desktop via 115.233.222.82:41641 in 25ms"),
+		"Find-NetRoute -RemoteIPAddress": []byte(`{"InterfaceAlias":"Meta","InterfaceIndex":19,"NextHop":"198.18.0.2","IPAddress":"198.18.0.1"}`),
+		"Remove-NetRoute":                []byte(""),
+	}}
+	service := NewService(runner)
+
+	_, err := service.ApplyBypass(context.Background(), BypassRequest{
+		PeerTailscaleIP: "100.109.251.97",
+		EndpointIP:      "115.233.222.82",
+		Candidate: EgressCandidate{
+			InterfaceIndex: 15,
+			NextHop:        "192.168.1.1",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected wrong interface to fail")
+	}
+
+	command := strings.Join(runner.commands, "\n")
+	if !strings.Contains(command, "Remove-NetRoute") {
+		t.Fatalf("expected failed bypass to roll back route, got %s", command)
 	}
 }
 

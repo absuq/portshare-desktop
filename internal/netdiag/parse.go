@@ -99,7 +99,11 @@ func parsePingLine(line string) (routeType, endpoint, latency string, ok bool) {
 		return "", "", "", false
 	}
 	endpoint = strings.TrimSpace(rest[:inIndex])
-	latency = strings.Fields(strings.TrimSpace(rest[inIndex+len(" in "):]))[0]
+	fields := strings.Fields(strings.TrimSpace(rest[inIndex+len(" in "):]))
+	if len(fields) == 0 {
+		return "", "", "", false
+	}
+	latency = fields[0]
 	switch {
 	case strings.HasPrefix(endpoint, "DERP("):
 		return RouteDERP, endpoint, latency, true

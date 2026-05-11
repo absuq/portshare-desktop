@@ -34,7 +34,7 @@ func (s *Service) DiagnosePeer(ctx context.Context, peerTailscaleIP string) (Pee
 		return report, fmt.Errorf(report.Message)
 	}
 
-	raw, err := s.runner.Run(ctx, "tailscale", "ping", "--until-direct=false", "--c", "3", peerTailscaleIP)
+	raw, err := s.runner.Run(ctx, "tailscale", "ping", "--c", "10", peerTailscaleIP)
 	if err != nil {
 		report.Status = PathFailed
 		report.Message = "Tailscale 路径检测失败：" + err.Error()
@@ -45,10 +45,15 @@ func (s *Service) DiagnosePeer(ctx context.Context, peerTailscaleIP string) (Pee
 	report.Endpoint = endpoint
 	report.EndpointIP = EndpointIP(endpoint)
 	report.Latency = latency
+	candidates, candidatesErr := s.egressCandidates(ctx)
 
 	if routeType != RouteDirect {
 		report.Status = ClassifyPath(routeType, latency, RouteInfo{})
+		report.Candidates = candidates
 		report.Message = pathStatusMessage(report.Status)
+		if candidatesErr != nil {
+			report.Message += "；读取公网出口失败：" + candidatesErr.Error()
+		}
 		return report, nil
 	}
 
@@ -58,11 +63,10 @@ func (s *Service) DiagnosePeer(ctx context.Context, peerTailscaleIP string) (Pee
 		report.Message = "读取当前出口失败：" + err.Error()
 		return report, err
 	}
-	candidates, err := s.egressCandidates(ctx)
-	if err != nil {
+	if candidatesErr != nil {
 		report.Status = PathFailed
-		report.Message = "读取公网出口失败：" + err.Error()
-		return report, err
+		report.Message = "读取公网出口失败：" + candidatesErr.Error()
+		return report, candidatesErr
 	}
 	report.CurrentRoute = current
 	report.Candidates = candidates
@@ -75,23 +79,28 @@ func (s *Service) ApplyBypass(ctx context.Context, request BypassRequest) (Activ
 	if err := validateBypassRequest(request); err != nil {
 		return ActiveBypass{}, err
 	}
-	if _, err := s.runner.Run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", newRouteScript(request)); err != nil {
+	if _, err := s.runPowerShell(ctx, newRouteScript(request)); err != nil {
 		return ActiveBypass{}, err
 	}
-	return ActiveBypass{
+	active := ActiveBypass{
 		PeerTailscaleIP: request.PeerTailscaleIP,
 		EndpointIP:      request.EndpointIP,
 		InterfaceIndex:  request.Candidate.InterfaceIndex,
 		NextHop:         request.Candidate.NextHop,
 		CreatedAt:       time.Now().UTC(),
-	}, nil
+	}
+	if err := s.verifyBypass(ctx, request); err != nil {
+		_ = s.ClearBypass(ctx, active)
+		return ActiveBypass{}, err
+	}
+	return active, nil
 }
 
 func (s *Service) ClearBypass(ctx context.Context, bypass ActiveBypass) error {
 	if err := validateActiveBypass(bypass); err != nil {
 		return err
 	}
-	_, err := s.runner.Run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", removeRouteScript(bypass))
+	_, err := s.runPowerShell(ctx, removeRouteScript(bypass))
 	return err
 }
 
@@ -99,7 +108,7 @@ func (s *Service) currentRoute(ctx context.Context, endpointIP string) (RouteInf
 	if endpointIP == "" {
 		return RouteInfo{}, fmt.Errorf("缺少 endpoint IP")
 	}
-	raw, err := s.runner.Run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", findRouteScript(endpointIP))
+	raw, err := s.runPowerShell(ctx, findRouteScript(endpointIP))
 	if err != nil {
 		return RouteInfo{}, err
 	}
@@ -114,7 +123,7 @@ func (s *Service) currentRoute(ctx context.Context, endpointIP string) (RouteInf
 }
 
 func (s *Service) egressCandidates(ctx context.Context) ([]EgressCandidate, error) {
-	raw, err := s.runner.Run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", defaultRoutesScript())
+	raw, err := s.runPowerShell(ctx, defaultRoutesScript())
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +131,84 @@ func (s *Service) egressCandidates(ctx context.Context) ([]EgressCandidate, erro
 	if err != nil {
 		return nil, err
 	}
+	s.enrichCandidatePublicMappings(ctx, candidates)
 	return rankEgressCandidates(candidates), nil
+}
+
+func (s *Service) runPowerShell(ctx context.Context, script string) ([]byte, error) {
+	return s.runner.Run(ctx, "powershell.exe", powershellArgs(script)...)
+}
+
+func powershellArgs(script string) []string {
+	prefix := "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); " +
+		"$OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+	return []string{"-NoProfile", "-NonInteractive", "-Command", prefix + script}
+}
+
+func (s *Service) enrichCandidatePublicMappings(ctx context.Context, candidates []EgressCandidate) {
+	for i := range candidates {
+		if strings.TrimSpace(candidates[i].InterfaceIP) == "" {
+			continue
+		}
+		report, err := s.netcheck(ctx, candidates[i].InterfaceIP)
+		if err != nil {
+			candidates[i].NetcheckError = err.Error()
+			continue
+		}
+		candidates[i].PublicIPv4 = report.GlobalV4
+		candidates[i].PublicIPv6 = report.GlobalV6
+		candidates[i].UDP = report.UDP
+	}
+}
+
+type netcheckReport struct {
+	UDP      bool   `json:"UDP"`
+	GlobalV4 string `json:"GlobalV4"`
+	GlobalV6 string `json:"GlobalV6"`
+}
+
+func (s *Service) netcheck(ctx context.Context, bindAddress string) (netcheckReport, error) {
+	raw, err := s.runner.Run(ctx, "tailscale", "netcheck", "--format", "json", "--bind-address", bindAddress)
+	if err != nil {
+		return netcheckReport{}, err
+	}
+	var report netcheckReport
+	if err := json.Unmarshal(bytes.TrimSpace(stripNetcheckWarning(raw)), &report); err != nil {
+		return netcheckReport{}, err
+	}
+	return report, nil
+}
+
+func stripNetcheckWarning(raw []byte) []byte {
+	text := string(raw)
+	if index := strings.Index(text, "\n# Warning:"); index != -1 {
+		text = text[:index]
+	}
+	return []byte(text)
+}
+
+func (s *Service) verifyBypass(ctx context.Context, request BypassRequest) error {
+	_, _ = s.runner.Run(ctx, "tailscale", "debug", "restun")
+	raw, err := s.runner.Run(ctx, "tailscale", "ping", "--c", "10", request.PeerTailscaleIP)
+	if err != nil {
+		return fmt.Errorf("验证 Tailscale 直连失败：%w", err)
+	}
+	routeType, endpoint, latency := ParsePingRoute(raw)
+	if routeType != RouteDirect {
+		return fmt.Errorf("所选出口未建立直连，当前为 %s %s %s", routeType, endpoint, latency)
+	}
+	endpointIP := EndpointIP(endpoint)
+	if endpointIP != request.EndpointIP {
+		return fmt.Errorf("Tailscale endpoint 已变化为 %s，请重新检测网络路径", endpoint)
+	}
+	current, err := s.currentRoute(ctx, endpointIP)
+	if err != nil {
+		return fmt.Errorf("验证当前出口失败：%w", err)
+	}
+	if current.InterfaceIndex != request.Candidate.InterfaceIndex {
+		return fmt.Errorf("所选出口未生效，当前仍走 %s", current.InterfaceAlias)
+	}
+	return nil
 }
 
 func findRouteScript(endpointIP string) string {
