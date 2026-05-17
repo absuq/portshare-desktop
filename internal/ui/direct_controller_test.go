@@ -481,8 +481,46 @@ func TestDirectControllerStartDirectModeShowsListeningState(t *testing.T) {
 	}
 }
 
+func TestDirectControllerStartDirectModeSyncsDefaultEnabledBridgeState(t *testing.T) {
+	mgr := directmanager.New(directmanager.Config{DeviceID: "device-a", DeviceName: "desktop-a"})
+	ctrl := NewDirectController(mgr)
+	defer mgr.StopControlServer(context.Background())
+
+	if err := ctrl.StartDirectMode(context.Background(), "shared-secret", "127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+
+	state := ctrl.State()
+	if !state.LocalhostBridgeEnabled {
+		t.Fatal("expected controller state to follow the manager's default enabled localhost bridge state")
+	}
+}
+
+func TestDirectControllerStartDirectModeSyncsDisabledBridgeState(t *testing.T) {
+	mgr := &fakeDirectManager{
+		ready:         directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104"},
+		bridgeEnabled: false,
+	}
+	ctrl := NewDirectController(mgr)
+	ctrl.state.LocalhostBridgeEnabled = true
+	ctrl.state.LocalhostBridgePorts = []int{18789}
+	ctrl.state.LocalhostBridgeConflictPorts = []int{3000}
+
+	if err := ctrl.StartDirectMode(context.Background(), "shared-secret", "100.79.83.104:17890"); err != nil {
+		t.Fatal(err)
+	}
+
+	state := ctrl.State()
+	if state.LocalhostBridgeEnabled {
+		t.Fatal("expected controller state to follow disabled localhost bridge manager state")
+	}
+	if len(state.LocalhostBridgePorts) != 0 || len(state.LocalhostBridgeConflictPorts) != 0 {
+		t.Fatalf("expected disabled bridge to clear ports and conflicts, got ports=%+v conflicts=%+v", state.LocalhostBridgePorts, state.LocalhostBridgeConflictPorts)
+	}
+}
+
 func TestDirectControllerStopDirectModeClearsListeningState(t *testing.T) {
-	mgr := &fakeDirectManager{ready: directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104"}}
+	mgr := &fakeDirectManager{ready: directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104"}, bridgeEnabled: true}
 	ctrl := NewDirectController(mgr)
 
 	if err := ctrl.StartDirectMode(context.Background(), "shared-secret", "100.79.83.104:17890"); err != nil {
@@ -495,6 +533,9 @@ func TestDirectControllerStopDirectModeClearsListeningState(t *testing.T) {
 	state := ctrl.State()
 	if state.ControlListening || state.ControlAddress != "" {
 		t.Fatalf("expected listening state to be cleared, got listening=%v address=%q", state.ControlListening, state.ControlAddress)
+	}
+	if !state.LocalhostBridgeEnabled {
+		t.Fatal("expected stop to sync enabled localhost bridge manager state")
 	}
 }
 

@@ -104,6 +104,7 @@ func (c *DirectController) StartDirectMode(ctx context.Context, secret string, l
 		return err
 	}
 	c.updateControlState()
+	c.syncLocalhostBridgeState()
 	if c.state.ControlAddress == "" {
 		c.state.ControlAddress = listenAddress
 		c.state.ControlListening = true
@@ -127,6 +128,7 @@ func (c *DirectController) StopDirectMode(ctx context.Context) error {
 		return err
 	}
 	c.updateControlState()
+	c.syncLocalhostBridgeState()
 	c.state.Message = "直连监听已停止"
 	return nil
 }
@@ -140,14 +142,7 @@ func (c *DirectController) Refresh(ctx context.Context) error {
 	c.state.LocalTailscaleIP = ready.LocalTailscaleIP
 	c.state.DiagnosticCode = ready.Code
 	c.updateControlState()
-	c.state.LocalhostBridgeEnabled = c.manager.LocalhostBridgeEnabled()
-	if c.state.LocalhostBridgeEnabled {
-		c.state.LocalhostBridgePorts = copyInts(c.manager.LocalhostBridgePorts())
-		c.state.LocalhostBridgeConflictPorts = copyInts(c.manager.LocalhostBridgeConflictPorts())
-	} else {
-		c.state.LocalhostBridgePorts = nil
-		c.state.LocalhostBridgeConflictPorts = nil
-	}
+	c.syncLocalhostBridgeState()
 	c.state.ActiveBypass, c.state.HasActiveBypass = c.manager.ActiveNetworkBypass()
 	peers, err := c.manager.TrustedPeers(ctx)
 	if err != nil {
@@ -502,6 +497,17 @@ func (c *DirectController) updateControlState() {
 	address := strings.TrimSpace(c.manager.ControlAddress())
 	c.state.ControlAddress = address
 	c.state.ControlListening = address != ""
+}
+
+func (c *DirectController) syncLocalhostBridgeState() {
+	c.state.LocalhostBridgeEnabled = c.manager.LocalhostBridgeEnabled()
+	if c.state.LocalhostBridgeEnabled {
+		c.state.LocalhostBridgePorts = copyInts(c.manager.LocalhostBridgePorts())
+		c.state.LocalhostBridgeConflictPorts = copyInts(c.manager.LocalhostBridgeConflictPorts())
+		return
+	}
+	c.state.LocalhostBridgePorts = nil
+	c.state.LocalhostBridgeConflictPorts = nil
 }
 
 func controlListeningMessage(address string) string {
