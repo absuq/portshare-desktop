@@ -12,49 +12,49 @@
 
 ## File Structure
 
-- Modify: `README.md`  
+- Modify: `README.md`
   修正文档中“本地 TCP 转发入口/创建转发”的旧描述，改为“配对、全端口授权、localhost-only TCP 自动桥接、链路诊断与优化”。
 
-- Modify: `AGENTS.md`  
+- Modify: `AGENTS.md`
   修正项目交接说明，删除已不存在的 `internal/direct/forward` 和“停止关联转发”说法。
 
-- Modify: `docs/NEXT_SESSION.md`  
+- Modify: `docs/NEXT_SESSION.md`
   更新下一步列表，把本计划拆成明确的验收项，并记录 release `v0.1.0` 后的实际状态。
 
-- Modify: `internal/firewall/firewall.go`  
+- Modify: `internal/firewall/firewall.go`
   为可信设备增加撤权能力：删除 `BuildTrustedPeerRules` 生成的 TCP/UDP 防火墙规则。
 
-- Modify: `internal/firewall/firewall_test.go`  
+- Modify: `internal/firewall/firewall_test.go`
   测试撤权只执行 TCP/UDP 规则删除，不执行新增规则。
 
-- Modify: `cmd/portshare/firewall_adapter.go`  
+- Modify: `cmd/portshare/firewall_adapter.go`
   把 direct manager 的撤权请求映射到 `internal/firewall.Authorizer`。
 
-- Modify: `cmd/portshare/firewall_adapter_test.go`  
+- Modify: `cmd/portshare/firewall_adapter_test.go`
   覆盖 adapter 的 revoke 映射。
 
-- Modify: `internal/direct/manager/manager.go`  
+- Modify: `internal/direct/manager/manager.go`
   增加 `RemoveTrustedPeer` 和 `SetLocalhostBridgeEnabled`。删除可信设备时同步撤销防火墙规则并刷新 localhost bridge 允许列表。
 
-- Modify: `internal/direct/manager/manager_test.go`  
+- Modify: `internal/direct/manager/manager_test.go`
   覆盖删除可信设备、撤销规则、刷新 bridge、禁用/启用 localhost bridge。
 
-- Modify: `internal/ui/direct_controller.go`  
+- Modify: `internal/ui/direct_controller.go`
   增加可信设备删除动作、localhost bridge 启停动作、配对错误分类提示。
 
-- Modify: `internal/ui/direct_controller_test.go`  
+- Modify: `internal/ui/direct_controller_test.go`
   覆盖删除设备、bridge 启停、DNS/超时/密钥不匹配/拒绝连接提示。
 
-- Modify: `internal/ui/main_window.go`  
+- Modify: `internal/ui/main_window.go`
   在可信设备区域增加“删除可信设备”按钮；在状态页或网络页增加“自动 localhost 桥接”开关。
 
-- Modify: `internal/ui/tray.go`  
+- Modify: `internal/ui/tray.go`
   如需从托盘退出时清理 bridge 状态，复用 `StopDirectMode` 现有路径；不要在托盘里增加复杂业务入口。
 
-- Create: `.github/workflows/ci.yml`  
+- Create: `.github/workflows/ci.yml`
   增加 Windows CI：`go test ./...`、`go vet ./...`、`scripts/build-windows.ps1`。
 
-- Create: `docs/release-checklist.md`  
+- Create: `docs/release-checklist.md`
   记录 release 前必须完成的本地验证、PR 检查、手动双机验收和资产 hash。
 
 ---
