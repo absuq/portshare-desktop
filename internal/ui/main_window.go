@@ -33,6 +33,7 @@ func (a *App) buildMainWindow() fyne.Window {
 
 	var state DirectState
 	var selectedPeerID string
+	var hasExplicitPeerSelection bool
 	var selectedCandidateIndex = -1
 	var candidateOptions []string
 	var selectedClashNodeIndex = -1
@@ -103,9 +104,11 @@ func (a *App) buildMainWindow() fyne.Window {
 	peers.OnSelected = func(id widget.ListItemID) {
 		if id < 0 || id >= len(state.Peers) {
 			selectedPeerID = ""
+			hasExplicitPeerSelection = false
 			return
 		}
 		selectedPeerID = state.Peers[id].ID
+		hasExplicitPeerSelection = true
 		render()
 	}
 
@@ -174,7 +177,7 @@ func (a *App) buildMainWindow() fyne.Window {
 	})
 	removePeerButton := widget.NewButton("删除可信设备", func() {
 		peerID := selectedPeerID
-		if peerID == "" {
+		if !canRemoveSelectedPeer(state.Peers, peerID, hasExplicitPeerSelection) {
 			dialog.ShowInformation("删除可信设备", "请先选择一个可信设备。", w)
 			return
 		}
@@ -240,12 +243,7 @@ func (a *App) buildMainWindow() fyne.Window {
 
 	render = func() {
 		state = a.directCtrl.State()
-		if selectedPeerID == "" && len(state.Peers) > 0 {
-			selectedPeerID = state.Peers[0].ID
-		}
-		if !hasPeer(state.Peers, selectedPeerID) {
-			selectedPeerID = ""
-		}
+		selectedPeerID, hasExplicitPeerSelection = reconcileSelectedPeer(state.Peers, selectedPeerID, hasExplicitPeerSelection)
 		if state.Ready {
 			statusLabel.SetText("Tailscale：ready")
 		} else {
@@ -302,6 +300,11 @@ func (a *App) buildMainWindow() fyne.Window {
 		}
 		if state.Message != "" {
 			messageLabel.SetText(state.Message)
+		}
+		if canRemoveSelectedPeer(state.Peers, selectedPeerID, hasExplicitPeerSelection) {
+			removePeerButton.Enable()
+		} else {
+			removePeerButton.Disable()
 		}
 		peers.Refresh()
 	}
@@ -535,6 +538,21 @@ func hasPeer(peers []directmanager.TrustedPeer, id string) bool {
 		}
 	}
 	return false
+}
+
+func reconcileSelectedPeer(peers []directmanager.TrustedPeer, selectedPeerID string, hasExplicitPeerSelection bool) (string, bool) {
+	if selectedPeerID != "" && !hasPeer(peers, selectedPeerID) {
+		selectedPeerID = ""
+		hasExplicitPeerSelection = false
+	}
+	if selectedPeerID == "" && len(peers) > 0 {
+		selectedPeerID = peers[0].ID
+	}
+	return selectedPeerID, hasExplicitPeerSelection
+}
+
+func canRemoveSelectedPeer(peers []directmanager.TrustedPeer, selectedPeerID string, hasExplicitPeerSelection bool) bool {
+	return hasExplicitPeerSelection && selectedPeerID != "" && hasPeer(peers, selectedPeerID)
 }
 
 func valueOrDash(value string) string {

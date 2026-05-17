@@ -72,6 +72,12 @@ func (a *Authorizer) RevokeTrustedPeer(ctx context.Context, access TrustedPeerAc
 	for _, rule := range rules {
 		output, err := a.runner.Run(ctx, "netsh", deleteRuleArgs(rule)...)
 		if err != nil {
+			if isFirewallPermissionError(output, err) {
+				return describeDeleteRuleError(rule, output, err)
+			}
+			if isDeleteRuleNotFoundError(output, err) {
+				continue
+			}
 			return describeDeleteRuleError(rule, output, err)
 		}
 	}
@@ -187,6 +193,46 @@ func describeDeleteRuleError(rule Rule, output []byte, err error) error {
 		return fmt.Errorf("删除 Windows 防火墙规则 %q 失败：%w", rule.Name, err)
 	}
 	return fmt.Errorf("删除 Windows 防火墙规则 %q 失败：%s：%w", rule.Name, details, err)
+}
+
+func isDeleteRuleNotFoundError(output []byte, err error) bool {
+	if err == nil {
+		return false
+	}
+	details := strings.TrimSpace(string(output))
+	text := strings.ToLower(details + " " + err.Error())
+	notFoundMarkers := []string{
+		"no rules match",
+		"no rule matches",
+		"no matching rule",
+		"no matching rules",
+		"rule was not found",
+		"rule not found",
+		"does not exist",
+		"not exist",
+		"not found",
+		"没有规则",
+		"未找到",
+		"找不到",
+	}
+	for _, marker := range notFoundMarkers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isFirewallPermissionError(output []byte, err error) bool {
+	if err == nil {
+		return false
+	}
+	details := strings.TrimSpace(string(output))
+	text := strings.ToLower(details + " " + err.Error())
+	return strings.Contains(text, "elevat") ||
+		strings.Contains(text, "administrator") ||
+		strings.Contains(text, "access is denied") ||
+		strings.Contains(text, "鎷掔粷璁块棶")
 }
 
 func describeRuleError(rule Rule, output []byte, err error) error {
