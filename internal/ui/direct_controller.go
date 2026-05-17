@@ -31,6 +31,8 @@ type DirectManager interface {
 	StartControlServer(context.Context, string, string) error
 	StopControlServer(context.Context) error
 	ControlAddress() string
+	LocalhostBridgeEnabled() bool
+	SetLocalhostBridgeEnabled(context.Context, bool) error
 	LocalhostBridgePorts() []int
 	LocalhostBridgeConflictPorts() []int
 	NetworkPath(context.Context, string) (netdiag.PeerPathReport, error)
@@ -45,6 +47,7 @@ type DirectManager interface {
 	RestoreClashNode(context.Context) error
 	PairPeer(context.Context, string) (directmanager.PairedPeer, error)
 	TrustedPeers(context.Context) ([]directmanager.TrustedPeer, error)
+	RemoveTrustedPeer(context.Context, string) error
 }
 
 type DirectController struct {
@@ -57,6 +60,7 @@ type DirectState struct {
 	LocalTailscaleIP             string
 	ControlListening             bool
 	ControlAddress               string
+	LocalhostBridgeEnabled       bool
 	LocalhostBridgePorts         []int
 	LocalhostBridgeConflictPorts []int
 	NetworkPath                  netdiag.PeerPathReport
@@ -100,6 +104,7 @@ func (c *DirectController) StartDirectMode(ctx context.Context, secret string, l
 		return err
 	}
 	c.updateControlState()
+	c.syncLocalhostBridgeState()
 	if c.state.ControlAddress == "" {
 		c.state.ControlAddress = listenAddress
 		c.state.ControlListening = true
@@ -123,6 +128,7 @@ func (c *DirectController) StopDirectMode(ctx context.Context) error {
 		return err
 	}
 	c.updateControlState()
+	c.syncLocalhostBridgeState()
 	c.state.Message = "直连监听已停止"
 	return nil
 }
@@ -136,8 +142,7 @@ func (c *DirectController) Refresh(ctx context.Context) error {
 	c.state.LocalTailscaleIP = ready.LocalTailscaleIP
 	c.state.DiagnosticCode = ready.Code
 	c.updateControlState()
-	c.state.LocalhostBridgePorts = copyInts(c.manager.LocalhostBridgePorts())
-	c.state.LocalhostBridgeConflictPorts = copyInts(c.manager.LocalhostBridgeConflictPorts())
+	c.syncLocalhostBridgeState()
 	c.state.ActiveBypass, c.state.HasActiveBypass = c.manager.ActiveNetworkBypass()
 	peers, err := c.manager.TrustedPeers(ctx)
 	if err != nil {
@@ -401,13 +406,58 @@ func (c *DirectController) pairNormalizedPeer(ctx context.Context, address strin
 	return nil
 }
 
+func (c *DirectController) RemoveTrustedPeer(ctx context.Context, peerID string) error {
+	if err := c.requireManager(); err != nil {
+		return err
+	}
+	if err := c.manager.RemoveTrustedPeer(ctx, peerID); err != nil {
+		c.state.Message = "删除可信设备失败：" + err.Error()
+		return err
+	}
+	successMessage := "已删除可信设备并撤销防火墙授权"
+	c.state.Message = successMessage
+	if err := c.Refresh(ctx); err != nil {
+		c.state.Message = successMessage + "，但状态刷新失败：" + err.Error()
+		return nil
+	}
+	c.state.Message = successMessage
+	return nil
+}
+
+func (c *DirectController) SetLocalhostBridgeEnabled(ctx context.Context, enabled bool) error {
+	if err := c.requireManager(); err != nil {
+		return err
+	}
+	if err := c.manager.SetLocalhostBridgeEnabled(ctx, enabled); err != nil {
+		c.state.Message = "切换 localhost 桥接失败：" + err.Error()
+		return err
+	}
+	c.state.LocalhostBridgeEnabled = enabled
+	if enabled {
+		c.state.Message = "已启用 localhost 桥接"
+	} else {
+		c.state.Message = "已暂停 localhost 桥接"
+		c.state.LocalhostBridgePorts = nil
+		c.state.LocalhostBridgeConflictPorts = nil
+	}
+	return nil
+}
+
 func describePairError(address string, err error) error {
 	if err == nil {
 		return nil
 	}
-	message := strings.ToLower(err.Error())
-	if strings.Contains(message, "actively refused") || strings.Contains(message, "connection refused") {
+	raw := err.Error()
+	message := strings.ToLower(raw)
+	switch {
+	case strings.Contains(message, "no such host") || strings.Contains(message, "dns"):
+		return fmt.Errorf("无法解析对方地址 %s。请确认 MagicDNS 已启用，或直接输入对方 Tailscale IP。可在 PowerShell 检查：Resolve-DnsName <peer>.ts.net -Server 100.100.100.100；如果默认 DNS 不生效，请执行 tailscale set --accept-dns=true。原始错误：%w", address, err)
+	case strings.Contains(message, "actively refused") || strings.Contains(message, "connection refused"):
 		return fmt.Errorf("对方 %s 没有接受 portshare 直连连接。请确认对方电脑也运行新版 portshare，输入同一个直连密钥，并点击“启用直连密钥”；如果已经启用，请检查 Tailscale Shields Up 或 Windows 防火墙是否拦截 17890。原始错误：%w", address, err)
+	case strings.Contains(message, "i/o timeout") || strings.Contains(message, "timed out") || strings.Contains(message, "timeout"):
+		return fmt.Errorf("连接对方 %s 超时。请确认两端 Tailscale 可互通，Tailscale Shields Up 未阻止入站，Windows 防火墙允许 portshare 控制端口 17890，并用 Test-NetConnection <peer-ip> -Port 17890 验证。原始错误：%w", address, err)
+	case strings.Contains(message, "authentication failed") || strings.Contains(message, "auth failed") || strings.Contains(message, "hmac"):
+		return fmt.Errorf("共享密钥不一致，配对认证失败。请在两台电脑上重新输入完全相同的直连密钥，并重新启用直连密钥后再配对。原始错误：%w", err)
 	}
 	return err
 }
@@ -455,6 +505,17 @@ func (c *DirectController) updateControlState() {
 	address := strings.TrimSpace(c.manager.ControlAddress())
 	c.state.ControlAddress = address
 	c.state.ControlListening = address != ""
+}
+
+func (c *DirectController) syncLocalhostBridgeState() {
+	c.state.LocalhostBridgeEnabled = c.manager.LocalhostBridgeEnabled()
+	if c.state.LocalhostBridgeEnabled {
+		c.state.LocalhostBridgePorts = copyInts(c.manager.LocalhostBridgePorts())
+		c.state.LocalhostBridgeConflictPorts = copyInts(c.manager.LocalhostBridgeConflictPorts())
+		return
+	}
+	c.state.LocalhostBridgePorts = nil
+	c.state.LocalhostBridgeConflictPorts = nil
 }
 
 func controlListeningMessage(address string) string {

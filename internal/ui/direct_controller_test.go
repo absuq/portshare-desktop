@@ -29,6 +29,8 @@ type fakeDirectManager struct {
 	pairAddress        string
 	trustedErr         error
 	pairErr            error
+	removePeerID       string
+	removeErr          error
 	networkReport      netdiag.PeerPathReport
 	networkPeer        string
 	applyRequest       netdiag.BypassRequest
@@ -43,6 +45,7 @@ type fakeDirectManager struct {
 	guardianPeer       string
 	guardianOptions    linkguardian.Options
 	guardianResult     linkguardian.Result
+	bridgeEnabled      bool
 }
 
 func (f *fakeDirectManager) Ready(context.Context) directmanager.ReadyState {
@@ -86,12 +89,35 @@ func (f *fakeDirectManager) TrustedPeers(context.Context) ([]directmanager.Trust
 	return append([]directmanager.TrustedPeer(nil), f.peers...), nil
 }
 
+func (f *fakeDirectManager) RemoveTrustedPeer(_ context.Context, peerID string) error {
+	f.removePeerID = peerID
+	if f.removeErr != nil {
+		return f.removeErr
+	}
+	for i := range f.peers {
+		if f.peers[i].ID == peerID {
+			f.peers = append(f.peers[:i], f.peers[i+1:]...)
+			return nil
+		}
+	}
+	return errors.New("peer not found")
+}
+
 func (f *fakeDirectManager) LocalhostBridgePorts() []int {
 	return []int{18789, 3000}
 }
 
 func (f *fakeDirectManager) LocalhostBridgeConflictPorts() []int {
 	return []int{3000}
+}
+
+func (f *fakeDirectManager) LocalhostBridgeEnabled() bool {
+	return f.bridgeEnabled
+}
+
+func (f *fakeDirectManager) SetLocalhostBridgeEnabled(_ context.Context, enabled bool) error {
+	f.bridgeEnabled = enabled
+	return nil
 }
 
 func (f *fakeDirectManager) NetworkPath(_ context.Context, peer string) (netdiag.PeerPathReport, error) {
@@ -182,7 +208,7 @@ func (f *fakeDirectManager) RestoreClashNode(context.Context) error {
 }
 
 func TestDirectControllerRefreshShowsReadyState(t *testing.T) {
-	mgr := &fakeDirectManager{ready: directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104", Code: tailscale.CodeOK}}
+	mgr := &fakeDirectManager{ready: directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104", Code: tailscale.CodeOK}, bridgeEnabled: true}
 	ctrl := NewDirectController(mgr)
 
 	if err := ctrl.Refresh(context.Background()); err != nil {
@@ -201,6 +227,61 @@ func TestDirectControllerRefreshShowsReadyState(t *testing.T) {
 	}
 	if len(state.LocalhostBridgeConflictPorts) != 1 || state.LocalhostBridgeConflictPorts[0] != 3000 {
 		t.Fatalf("expected localhost bridge conflict ports in state, got %+v", state.LocalhostBridgeConflictPorts)
+	}
+	if !state.LocalhostBridgeEnabled {
+		t.Fatal("expected localhost bridge enabled state to be refreshed")
+	}
+}
+
+func TestDirectControllerSetLocalhostBridgeEnabledUpdatesState(t *testing.T) {
+	mgr := &fakeDirectManager{bridgeEnabled: true}
+	ctrl := NewDirectController(mgr)
+	ctrl.state.LocalhostBridgePorts = []int{18789}
+	ctrl.state.LocalhostBridgeConflictPorts = []int{3000}
+
+	if err := ctrl.SetLocalhostBridgeEnabled(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	state := ctrl.State()
+	if state.LocalhostBridgeEnabled {
+		t.Fatal("expected bridge disabled in state")
+	}
+	if len(state.LocalhostBridgePorts) != 0 || len(state.LocalhostBridgeConflictPorts) != 0 {
+		t.Fatalf("expected disabled bridge to clear ports and conflicts, got ports=%+v conflicts=%+v", state.LocalhostBridgePorts, state.LocalhostBridgeConflictPorts)
+	}
+	if !strings.Contains(state.Message, "已暂停 localhost 桥接") {
+		t.Fatalf("unexpected message: %q", state.Message)
+	}
+
+	if err := ctrl.SetLocalhostBridgeEnabled(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	state = ctrl.State()
+	if !state.LocalhostBridgeEnabled {
+		t.Fatal("expected bridge enabled in state")
+	}
+	if !strings.Contains(state.Message, "已启用 localhost 桥接") {
+		t.Fatalf("unexpected message: %q", state.Message)
+	}
+}
+
+func TestDirectControllerRefreshClearsBridgePortsWhenDisabled(t *testing.T) {
+	mgr := &fakeDirectManager{
+		ready:         directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104", Code: tailscale.CodeOK},
+		bridgeEnabled: false,
+	}
+	ctrl := NewDirectController(mgr)
+
+	if err := ctrl.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	state := ctrl.State()
+	if state.LocalhostBridgeEnabled {
+		t.Fatal("expected bridge disabled in refreshed state")
+	}
+	if len(state.LocalhostBridgePorts) != 0 || len(state.LocalhostBridgeConflictPorts) != 0 {
+		t.Fatalf("expected disabled refresh to clear bridge state, got ports=%+v conflicts=%+v", state.LocalhostBridgePorts, state.LocalhostBridgeConflictPorts)
 	}
 }
 
@@ -400,8 +481,46 @@ func TestDirectControllerStartDirectModeShowsListeningState(t *testing.T) {
 	}
 }
 
+func TestDirectControllerStartDirectModeSyncsDefaultEnabledBridgeState(t *testing.T) {
+	mgr := directmanager.New(directmanager.Config{DeviceID: "device-a", DeviceName: "desktop-a"})
+	ctrl := NewDirectController(mgr)
+	defer mgr.StopControlServer(context.Background())
+
+	if err := ctrl.StartDirectMode(context.Background(), "shared-secret", "127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+
+	state := ctrl.State()
+	if !state.LocalhostBridgeEnabled {
+		t.Fatal("expected controller state to follow the manager's default enabled localhost bridge state")
+	}
+}
+
+func TestDirectControllerStartDirectModeSyncsDisabledBridgeState(t *testing.T) {
+	mgr := &fakeDirectManager{
+		ready:         directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104"},
+		bridgeEnabled: false,
+	}
+	ctrl := NewDirectController(mgr)
+	ctrl.state.LocalhostBridgeEnabled = true
+	ctrl.state.LocalhostBridgePorts = []int{18789}
+	ctrl.state.LocalhostBridgeConflictPorts = []int{3000}
+
+	if err := ctrl.StartDirectMode(context.Background(), "shared-secret", "100.79.83.104:17890"); err != nil {
+		t.Fatal(err)
+	}
+
+	state := ctrl.State()
+	if state.LocalhostBridgeEnabled {
+		t.Fatal("expected controller state to follow disabled localhost bridge manager state")
+	}
+	if len(state.LocalhostBridgePorts) != 0 || len(state.LocalhostBridgeConflictPorts) != 0 {
+		t.Fatalf("expected disabled bridge to clear ports and conflicts, got ports=%+v conflicts=%+v", state.LocalhostBridgePorts, state.LocalhostBridgeConflictPorts)
+	}
+}
+
 func TestDirectControllerStopDirectModeClearsListeningState(t *testing.T) {
-	mgr := &fakeDirectManager{ready: directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104"}}
+	mgr := &fakeDirectManager{ready: directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104"}, bridgeEnabled: true}
 	ctrl := NewDirectController(mgr)
 
 	if err := ctrl.StartDirectMode(context.Background(), "shared-secret", "100.79.83.104:17890"); err != nil {
@@ -414,6 +533,9 @@ func TestDirectControllerStopDirectModeClearsListeningState(t *testing.T) {
 	state := ctrl.State()
 	if state.ControlListening || state.ControlAddress != "" {
 		t.Fatalf("expected listening state to be cleared, got listening=%v address=%q", state.ControlListening, state.ControlAddress)
+	}
+	if !state.LocalhostBridgeEnabled {
+		t.Fatal("expected stop to sync enabled localhost bridge manager state")
 	}
 }
 
@@ -463,6 +585,47 @@ func TestDirectControllerPairPeerKeepsAuthorizedSuccessMessageAfterRefresh(t *te
 	}
 }
 
+func TestDirectControllerRemoveTrustedPeerUpdatesState(t *testing.T) {
+	mgr := &fakeDirectManager{
+		ready: directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104"},
+		peers: []directmanager.TrustedPeer{
+			{ID: "device-b", DisplayName: "desktop-b", TailscaleIP: "100.109.251.97"},
+		},
+	}
+	ctrl := NewDirectController(mgr)
+	if err := ctrl.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ctrl.RemoveTrustedPeer(context.Background(), "device-b"); err != nil {
+		t.Fatal(err)
+	}
+
+	if mgr.removePeerID != "device-b" {
+		t.Fatalf("expected remove to use selected peer id, got %q", mgr.removePeerID)
+	}
+	state := ctrl.State()
+	if len(state.Peers) != 0 {
+		t.Fatalf("expected peer to be removed from state, got %+v", state.Peers)
+	}
+	if state.Message != "已删除可信设备并撤销防火墙授权" {
+		t.Fatalf("unexpected success message: %q", state.Message)
+	}
+}
+
+func TestDirectControllerRemoveTrustedPeerReportsFailure(t *testing.T) {
+	mgr := &fakeDirectManager{removeErr: errors.New("store unavailable")}
+	ctrl := NewDirectController(mgr)
+
+	err := ctrl.RemoveTrustedPeer(context.Background(), "device-b")
+	if err == nil {
+		t.Fatal("expected remove failure")
+	}
+	if !strings.HasPrefix(ctrl.State().Message, "删除可信设备失败：") {
+		t.Fatalf("unexpected failure message: %q", ctrl.State().Message)
+	}
+}
+
 func TestDirectControllerPairPeerExplainsConnectionRefused(t *testing.T) {
 	mgr := &fakeDirectManager{
 		pairErr: errors.New("dial tcp 100.79.83.104:17890: connectex: No connection could be made because the target machine actively refused it"),
@@ -481,6 +644,60 @@ func TestDirectControllerPairPeerExplainsConnectionRefused(t *testing.T) {
 	}
 	if !strings.Contains(ctrl.State().Message, "配对失败：对方 100.79.83.104:17890") {
 		t.Fatalf("expected state message to include friendly pairing failure, got %q", ctrl.State().Message)
+	}
+}
+
+func TestDescribePairErrorExplainsDNSFailure(t *testing.T) {
+	err := describePairError("abs-u-q.tail51fe78.ts.net:17890", errors.New("lookup abs-u-q.tail51fe78.ts.net: no such host"))
+	if err == nil {
+		t.Fatal("expected DNS pairing error")
+	}
+	if !strings.Contains(err.Error(), "MagicDNS") {
+		t.Fatalf("expected MagicDNS hint, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "直接输入对方 Tailscale IP") {
+		t.Fatalf("expected direct Tailscale IP hint, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "Resolve-DnsName <peer>.ts.net -Server 100.100.100.100") {
+		t.Fatalf("expected Resolve-DnsName command, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "tailscale set --accept-dns=true") {
+		t.Fatalf("expected accept-dns command, got %v", err)
+	}
+}
+
+func TestDescribePairErrorExplainsTimeout(t *testing.T) {
+	err := describePairError("100.109.251.97:17890", errors.New("dial tcp 100.109.251.97:17890: i/o timeout"))
+	if err == nil {
+		t.Fatal("expected timeout pairing error")
+	}
+	if !strings.Contains(err.Error(), "Tailscale 可互通") {
+		t.Fatalf("expected Tailscale connectivity hint, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "Shields Up") {
+		t.Fatalf("expected Shields Up hint, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "Windows 防火墙") {
+		t.Fatalf("expected Windows firewall hint, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "Test-NetConnection <peer-ip> -Port 17890") {
+		t.Fatalf("expected Test-NetConnection command, got %v", err)
+	}
+}
+
+func TestDescribePairErrorExplainsSharedSecretMismatch(t *testing.T) {
+	err := describePairError("100.109.251.97:17890", errors.New("authentication failed"))
+	if err == nil {
+		t.Fatal("expected authentication pairing error")
+	}
+	if !strings.Contains(err.Error(), "共享密钥不一致") {
+		t.Fatalf("expected shared secret mismatch hint, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "重新输入") {
+		t.Fatalf("expected re-enter secret hint, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "重新启用直连密钥") {
+		t.Fatalf("expected re-enable direct key hint, got %v", err)
 	}
 }
 

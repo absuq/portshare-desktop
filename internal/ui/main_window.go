@@ -33,11 +33,13 @@ func (a *App) buildMainWindow() fyne.Window {
 
 	var state DirectState
 	var selectedPeerID string
+	var hasExplicitPeerSelection bool
 	var selectedCandidateIndex = -1
 	var candidateOptions []string
 	var selectedClashNodeIndex = -1
 	var clashOptions []string
 	var render func()
+	var renderingBridgeCheck bool
 
 	summaryLabel := widget.NewLabel("Tailscale：未检测 · IP - · 未监听")
 	summaryLabel.TextStyle = fyne.TextStyle{Bold: true}
@@ -103,9 +105,11 @@ func (a *App) buildMainWindow() fyne.Window {
 	peers.OnSelected = func(id widget.ListItemID) {
 		if id < 0 || id >= len(state.Peers) {
 			selectedPeerID = ""
+			hasExplicitPeerSelection = false
 			return
 		}
 		selectedPeerID = state.Peers[id].ID
+		hasExplicitPeerSelection = true
 		render()
 	}
 
@@ -117,6 +121,14 @@ func (a *App) buildMainWindow() fyne.Window {
 		}
 		render()
 	}
+	bridgeEnabledCheck := widget.NewCheck("自动 localhost 桥接", func(enabled bool) {
+		if renderingBridgeCheck {
+			return
+		}
+		withTimeout(func(ctx context.Context) error {
+			return a.directCtrl.SetLocalhostBridgeEnabled(ctx, enabled)
+		})
+	})
 
 	refreshButton := widget.NewButton("检测 Tailscale", func() {
 		withTimeout(func(ctx context.Context) error {
@@ -172,6 +184,22 @@ func (a *App) buildMainWindow() fyne.Window {
 			return nil
 		})
 	})
+	removePeerButton := widget.NewButton("删除可信设备", func() {
+		peerID := selectedPeerID
+		if !canRemoveSelectedPeer(state.Peers, peerID, hasExplicitPeerSelection) {
+			dialog.ShowInformation("删除可信设备", "请先选择一个可信设备。", w)
+			return
+		}
+		peerName := peerDisplayNameByID(state.Peers, peerID)
+		dialog.ShowConfirm("删除可信设备", "确定删除 "+peerName+" 并撤销防火墙授权吗？", func(confirm bool) {
+			if !confirm {
+				return
+			}
+			withTimeout(func(ctx context.Context) error {
+				return a.directCtrl.RemoveTrustedPeer(ctx, peerID)
+			})
+		}, w)
+	})
 	detectNetworkButton := widget.NewButton("检测网络路径", func() {
 		withTimeout(func(ctx context.Context) error {
 			peerIP := selectedPeerTailscaleIP(state.Peers, selectedPeerID, peerEntry.Text)
@@ -224,12 +252,7 @@ func (a *App) buildMainWindow() fyne.Window {
 
 	render = func() {
 		state = a.directCtrl.State()
-		if selectedPeerID == "" && len(state.Peers) > 0 {
-			selectedPeerID = state.Peers[0].ID
-		}
-		if !hasPeer(state.Peers, selectedPeerID) {
-			selectedPeerID = ""
-		}
+		selectedPeerID, hasExplicitPeerSelection = reconcileSelectedPeer(state.Peers, selectedPeerID, hasExplicitPeerSelection)
 		if state.Ready {
 			statusLabel.SetText("Tailscale：ready")
 		} else {
@@ -252,6 +275,14 @@ func (a *App) buildMainWindow() fyne.Window {
 		clashControlLabel.SetText(clashControlText(state))
 		clashResultLabel.SetText(clashApplyResultText(state))
 		summaryLabel.SetText(compactStatusSummaryText(state))
+		renderingBridgeCheck = true
+		bridgeEnabledCheck.SetChecked(state.LocalhostBridgeEnabled)
+		renderingBridgeCheck = false
+		if state.ControlListening {
+			bridgeEnabledCheck.Enable()
+		} else {
+			bridgeEnabledCheck.Disable()
+		}
 
 		options := egressCandidateOptions(state.NetworkPath.Candidates)
 		candidateOptions = options
@@ -286,6 +317,11 @@ func (a *App) buildMainWindow() fyne.Window {
 		}
 		if state.Message != "" {
 			messageLabel.SetText(state.Message)
+		}
+		if canRemoveSelectedPeer(state.Peers, selectedPeerID, hasExplicitPeerSelection) {
+			removePeerButton.Enable()
+		} else {
+			removePeerButton.Disable()
 		}
 		peers.Refresh()
 	}
@@ -332,6 +368,7 @@ func (a *App) buildMainWindow() fyne.Window {
 		statusLabel,
 		ipLabel,
 		controlLabel,
+		bridgeEnabledCheck,
 		bridgeLabel,
 		bridgeConflictLabel,
 	))
@@ -343,7 +380,7 @@ func (a *App) buildMainWindow() fyne.Window {
 	)
 	setupPanel.SetTabLocation(container.TabLocationTop)
 	peerPanel := container.NewBorder(
-		container.NewVBox(widget.NewLabel("可信设备")),
+		container.NewVBox(widget.NewLabel("可信设备"), removePeerButton),
 		nil,
 		nil,
 		nil,
@@ -482,6 +519,15 @@ func peerDisplayName(peer directmanager.TrustedPeer) string {
 	return peer.ID
 }
 
+func peerDisplayNameByID(peers []directmanager.TrustedPeer, id string) string {
+	for _, peer := range peers {
+		if peer.ID == id {
+			return peerDisplayName(peer)
+		}
+	}
+	return id
+}
+
 func peerDisplayMeta(peer directmanager.TrustedPeer, latency PeerLatency) string {
 	parts := []string{valueOrDash(peer.TailscaleIP)}
 	if !peer.AccessAuthorizedAt.IsZero() {
@@ -510,6 +556,21 @@ func hasPeer(peers []directmanager.TrustedPeer, id string) bool {
 		}
 	}
 	return false
+}
+
+func reconcileSelectedPeer(peers []directmanager.TrustedPeer, selectedPeerID string, hasExplicitPeerSelection bool) (string, bool) {
+	if selectedPeerID != "" && !hasPeer(peers, selectedPeerID) {
+		selectedPeerID = ""
+		hasExplicitPeerSelection = false
+	}
+	if selectedPeerID == "" && len(peers) > 0 {
+		selectedPeerID = peers[0].ID
+	}
+	return selectedPeerID, hasExplicitPeerSelection
+}
+
+func canRemoveSelectedPeer(peers []directmanager.TrustedPeer, selectedPeerID string, hasExplicitPeerSelection bool) bool {
+	return hasExplicitPeerSelection && selectedPeerID != "" && hasPeer(peers, selectedPeerID)
 }
 
 func valueOrDash(value string) string {

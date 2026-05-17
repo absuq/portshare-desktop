@@ -2,6 +2,7 @@ package firewall
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -18,6 +19,26 @@ type recordingRunner struct {
 func (r *recordingRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
 	r.commands = append(r.commands, recordedCommand{name: name, args: append([]string(nil), args...)})
 	return []byte("ok"), nil
+}
+
+type scriptedRunner struct {
+	commands []recordedCommand
+	results  []scriptedResult
+}
+
+type scriptedResult struct {
+	output []byte
+	err    error
+}
+
+func (r *scriptedRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	r.commands = append(r.commands, recordedCommand{name: name, args: append([]string(nil), args...)})
+	if len(r.results) == 0 {
+		return nil, errors.New("unexpected command")
+	}
+	result := r.results[0]
+	r.results = r.results[1:]
+	return result.output, result.err
 }
 
 func TestBuildTrustedPeerRulesCreatesTCPAndUDPScopedToTailnetIPs(t *testing.T) {
@@ -86,6 +107,113 @@ func TestAuthorizerReplacesTCPAndUDPRules(t *testing.T) {
 	}
 	if !containsArg(runner.commands[3].args, "protocol=UDP") {
 		t.Fatalf("expected fourth command to add UDP rule, got %+v", runner.commands[3])
+	}
+}
+
+func TestAuthorizerRevokesTCPAndUDPRules(t *testing.T) {
+	runner := &recordingRunner{}
+	authorizer := NewAuthorizer(runner)
+
+	err := authorizer.RevokeTrustedPeer(context.Background(), TrustedPeerAccess{
+		RulePrefix:       "portshare",
+		LocalTailscaleIP: "100.79.83.104",
+		PeerTailscaleIP:  "100.109.251.97",
+		PeerID:           "desktop-bgpql0r",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(runner.commands) != 2 {
+		t.Fatalf("expected delete commands for TCP and UDP, got %+v", runner.commands)
+	}
+	for _, command := range runner.commands {
+		if command.name != "netsh" {
+			t.Fatalf("expected netsh command, got %+v", command)
+		}
+		if !containsArg(command.args, "delete") || !containsArgPrefix(command.args, "name=portshare") {
+			t.Fatalf("expected delete rule command, got %+v", command)
+		}
+		if containsArg(command.args, "add") {
+			t.Fatalf("revoke must not add firewall rules, got %+v", command)
+		}
+	}
+}
+
+func TestAuthorizerRevokeDoesNotRequireLocalTailscaleIP(t *testing.T) {
+	runner := &recordingRunner{}
+	authorizer := NewAuthorizer(runner)
+
+	err := authorizer.RevokeTrustedPeer(context.Background(), TrustedPeerAccess{
+		RulePrefix:      "portshare",
+		PeerTailscaleIP: "100.109.251.97",
+		PeerID:          "desktop-bgpql0r",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(runner.commands) != 2 {
+		t.Fatalf("expected delete commands for TCP and UDP, got %+v", runner.commands)
+	}
+	for _, command := range runner.commands {
+		if !containsArg(command.args, "delete") || !containsArgPrefix(command.args, "name=portshare-trusted-desktop-bgpql0r-100.109.251.97-") {
+			t.Fatalf("expected delete rule command with stable trusted peer rule name, got %+v", command)
+		}
+		if containsArg(command.args, "localip=") {
+			t.Fatalf("delete rule command should not require localip, got %+v", command)
+		}
+	}
+}
+
+func TestAuthorizerRevokeContinuesWhenRuleDoesNotExist(t *testing.T) {
+	runner := &scriptedRunner{
+		results: []scriptedResult{
+			{output: []byte("No rules match the specified criteria."), err: errors.New("exit status 1")},
+			{output: []byte("Deleted 1 rule(s)."), err: nil},
+		},
+	}
+	authorizer := NewAuthorizer(runner)
+
+	err := authorizer.RevokeTrustedPeer(context.Background(), TrustedPeerAccess{
+		RulePrefix:       "portshare",
+		LocalTailscaleIP: "100.79.83.104",
+		PeerTailscaleIP:  "100.109.251.97",
+		PeerID:           "desktop-bgpql0r",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(runner.commands) != 2 {
+		t.Fatalf("expected both delete commands to run, got %+v", runner.commands)
+	}
+	for _, command := range runner.commands {
+		if !containsArg(command.args, "delete") || !containsArgPrefix(command.args, "name=portshare") {
+			t.Fatalf("expected delete rule command, got %+v", command)
+		}
+	}
+}
+
+func TestAuthorizerRevokeStillFailsPermissionErrors(t *testing.T) {
+	runner := &scriptedRunner{
+		results: []scriptedResult{
+			{output: []byte("Access is denied. No rules match the specified criteria."), err: errors.New("exit status 1")},
+		},
+	}
+	authorizer := NewAuthorizer(runner)
+
+	err := authorizer.RevokeTrustedPeer(context.Background(), TrustedPeerAccess{
+		RulePrefix:       "portshare",
+		LocalTailscaleIP: "100.79.83.104",
+		PeerTailscaleIP:  "100.109.251.97",
+		PeerID:           "desktop-bgpql0r",
+	})
+	if err == nil {
+		t.Fatal("expected permission error to fail revoke")
+	}
+	if len(runner.commands) != 1 {
+		t.Fatalf("expected revoke to stop on permission error, got %+v", runner.commands)
 	}
 }
 

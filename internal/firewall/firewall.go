@@ -61,10 +61,41 @@ func (a *Authorizer) AllowTrustedPeer(ctx context.Context, access TrustedPeerAcc
 	return nil
 }
 
+func (a *Authorizer) RevokeTrustedPeer(ctx context.Context, access TrustedPeerAccess) error {
+	if a == nil {
+		return errors.New("firewall authorizer is not configured")
+	}
+	rules, err := BuildTrustedPeerRevokeRules(access)
+	if err != nil {
+		return err
+	}
+	for _, rule := range rules {
+		output, err := a.runner.Run(ctx, "netsh", deleteRuleArgs(rule)...)
+		if err != nil {
+			if isFirewallPermissionError(output, err) {
+				return describeDeleteRuleError(rule, output, err)
+			}
+			if isDeleteRuleNotFoundError(output, err) {
+				continue
+			}
+			return describeDeleteRuleError(rule, output, err)
+		}
+	}
+	return nil
+}
+
 func BuildTrustedPeerRules(access TrustedPeerAccess) ([]Rule, error) {
+	return buildTrustedPeerRules(access, true)
+}
+
+func BuildTrustedPeerRevokeRules(access TrustedPeerAccess) ([]Rule, error) {
+	return buildTrustedPeerRules(access, false)
+}
+
+func buildTrustedPeerRules(access TrustedPeerAccess, requireLocalIP bool) ([]Rule, error) {
 	localIP := strings.TrimSpace(access.LocalTailscaleIP)
 	peerIP := strings.TrimSpace(access.PeerTailscaleIP)
-	if net.ParseIP(localIP) == nil {
+	if requireLocalIP && net.ParseIP(localIP) == nil {
 		return nil, fmt.Errorf("本机 Tailscale IP 无效或缺失：%q", access.LocalTailscaleIP)
 	}
 	if net.ParseIP(peerIP) == nil {
@@ -158,6 +189,58 @@ func addRuleArgs(rule Rule) []string {
 		"profile=any",
 		"enable=yes",
 	}
+}
+
+func describeDeleteRuleError(rule Rule, output []byte, err error) error {
+	details := strings.TrimSpace(string(output))
+	text := strings.ToLower(details + " " + err.Error())
+	if strings.Contains(text, "elevat") || strings.Contains(text, "administrator") || strings.Contains(text, "access is denied") || strings.Contains(text, "拒绝访问") {
+		return fmt.Errorf("删除 Windows 防火墙规则 %q 失败：请以管理员身份运行 portshare 后重试：%w", rule.Name, err)
+	}
+	if details == "" {
+		return fmt.Errorf("删除 Windows 防火墙规则 %q 失败：%w", rule.Name, err)
+	}
+	return fmt.Errorf("删除 Windows 防火墙规则 %q 失败：%s：%w", rule.Name, details, err)
+}
+
+func isDeleteRuleNotFoundError(output []byte, err error) bool {
+	if err == nil {
+		return false
+	}
+	details := strings.TrimSpace(string(output))
+	text := strings.ToLower(details + " " + err.Error())
+	notFoundMarkers := []string{
+		"no rules match",
+		"no rule matches",
+		"no matching rule",
+		"no matching rules",
+		"rule was not found",
+		"rule not found",
+		"does not exist",
+		"not exist",
+		"not found",
+		"没有规则",
+		"未找到",
+		"找不到",
+	}
+	for _, marker := range notFoundMarkers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isFirewallPermissionError(output []byte, err error) bool {
+	if err == nil {
+		return false
+	}
+	details := strings.TrimSpace(string(output))
+	text := strings.ToLower(details + " " + err.Error())
+	return strings.Contains(text, "elevat") ||
+		strings.Contains(text, "administrator") ||
+		strings.Contains(text, "access is denied") ||
+		strings.Contains(text, "鎷掔粷璁块棶")
 }
 
 func describeRuleError(rule Rule, output []byte, err error) error {

@@ -3,6 +3,7 @@ package clash
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -47,6 +48,10 @@ func (f fakeVerifier) VerifyTailscaleDirect(context.Context, string) (RouteCheck
 }
 
 func TestRefreshNodesReturnsRegionsCurrentAndDelays(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "clash-verge.yaml"), `
+external-controller: 127.0.0.1:9097
+`)
 	controller := &fakeController{
 		snapshot: ProxySnapshot{Groups: []ProxyGroup{{
 			Name: "GLOBAL",
@@ -61,7 +66,7 @@ func TestRefreshNodesReturnsRegionsCurrentAndDelays(t *testing.T) {
 			"杭州 01": 35 * time.Millisecond,
 		},
 	}
-	service := NewService(&fakeRunner{}, nil)
+	service := NewService(&fakeRunner{}, []string{root})
 	service.client = controller
 
 	report, err := service.RefreshNodes(context.Background())

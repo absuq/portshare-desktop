@@ -12,6 +12,7 @@ import (
 	"github.com/absuq/portshare-desktop/internal/clash"
 	direct "github.com/absuq/portshare-desktop/internal/direct"
 	"github.com/absuq/portshare-desktop/internal/direct/store"
+	"github.com/absuq/portshare-desktop/internal/firewall"
 	"github.com/absuq/portshare-desktop/internal/linkguardian"
 	"github.com/absuq/portshare-desktop/internal/netdiag"
 	"github.com/absuq/portshare-desktop/internal/tailscale"
@@ -48,9 +49,11 @@ func (f *fakePairClient) Pair(ctx context.Context, address string) (direct.Paire
 }
 
 type fakeAccessAuthorizer struct {
-	mu    sync.Mutex
-	calls []TrustedPeerAccess
-	err   error
+	mu          sync.Mutex
+	calls       []TrustedPeerAccess
+	revokeCalls []TrustedPeerAccess
+	err         error
+	revokeErr   error
 }
 
 func (f *fakeAccessAuthorizer) AllowTrustedPeer(_ context.Context, access TrustedPeerAccess) error {
@@ -60,10 +63,64 @@ func (f *fakeAccessAuthorizer) AllowTrustedPeer(_ context.Context, access Truste
 	return f.err
 }
 
+func (f *fakeAccessAuthorizer) RevokeTrustedPeer(_ context.Context, access TrustedPeerAccess) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.revokeCalls = append(f.revokeCalls, access)
+	return f.revokeErr
+}
+
 func (f *fakeAccessAuthorizer) Calls() []TrustedPeerAccess {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]TrustedPeerAccess(nil), f.calls...)
+}
+
+func (f *fakeAccessAuthorizer) RevokeCalls() []TrustedPeerAccess {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]TrustedPeerAccess(nil), f.revokeCalls...)
+}
+
+type managerRecordedCommand struct {
+	name string
+	args []string
+}
+
+type managerRecordingRunner struct {
+	mu       sync.Mutex
+	commands []managerRecordedCommand
+}
+
+func (r *managerRecordingRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.commands = append(r.commands, managerRecordedCommand{name: name, args: append([]string(nil), args...)})
+	return []byte("ok"), nil
+}
+
+func (r *managerRecordingRunner) Commands() []managerRecordedCommand {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]managerRecordedCommand(nil), r.commands...)
+}
+
+type firewallBackedRevokeAuthorizer struct {
+	inner *firewall.Authorizer
+}
+
+func (a firewallBackedRevokeAuthorizer) AllowTrustedPeer(context.Context, TrustedPeerAccess) error {
+	return nil
+}
+
+func (a firewallBackedRevokeAuthorizer) RevokeTrustedPeer(ctx context.Context, access TrustedPeerAccess) error {
+	return a.inner.RevokeTrustedPeer(ctx, firewall.TrustedPeerAccess{
+		RulePrefix:       access.RulePrefix,
+		LocalTailscaleIP: access.LocalTailscaleIP,
+		PeerTailscaleIP:  access.PeerTailscaleIP,
+		PeerID:           access.PeerID,
+		PeerName:         access.PeerName,
+	})
 }
 
 type fakeLocalhostBridge struct {
@@ -341,6 +398,68 @@ func TestStopControlServerClosesLocalhostBridge(t *testing.T) {
 	}
 }
 
+func TestSetLocalhostBridgeEnabledClosesAndRestartsBridge(t *testing.T) {
+	mem := NewMemoryPeerStore()
+	if err := mem.SavePeers([]store.TrustedPeer{{ID: "device-b", TailscaleIP: "100.109.251.97"}}); err != nil {
+		t.Fatal(err)
+	}
+	bridge := &fakeLocalhostBridge{refreshC: make(chan struct{}, 4)}
+	m := New(Config{
+		PeerStore:       mem,
+		LocalhostBridge: bridge,
+		DeviceID:        "device-a",
+		DeviceName:      "desktop-a",
+	})
+
+	if !m.LocalhostBridgeEnabled() {
+		t.Fatal("expected localhost bridge to be enabled by default")
+	}
+	if err := m.StartControlServer(context.Background(), "127.0.0.1:0", "shared"); err != nil {
+		t.Fatal(err)
+	}
+	defer m.StopControlServer(context.Background())
+	waitForBridgeRefresh(t, bridge.refreshC)
+
+	if err := m.SetLocalhostBridgeEnabled(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	if m.LocalhostBridgeEnabled() {
+		t.Fatal("expected localhost bridge to be disabled")
+	}
+	_, _, refreshAfterDisable, closed := bridge.Snapshot()
+	if !closed {
+		t.Fatal("expected bridge to be closed when disabled")
+	}
+	if err := m.refreshLocalhostBridge(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, _, refreshAfterDisabledRefresh, _ := bridge.Snapshot()
+	if refreshAfterDisabledRefresh != refreshAfterDisable {
+		t.Fatalf("disabled bridge should not refresh, before=%d after=%d", refreshAfterDisable, refreshAfterDisabledRefresh)
+	}
+
+	if err := m.SetLocalhostBridgeEnabled(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if !m.LocalhostBridgeEnabled() {
+		t.Fatal("expected localhost bridge to be enabled")
+	}
+	waitForBridgeRefresh(t, bridge.refreshC)
+	localIP, peers, refreshAfterEnable, _ := bridge.Snapshot()
+	if localIP != "127.0.0.1" || len(peers) != 1 || peers[0] != "100.109.251.97" || refreshAfterEnable <= refreshAfterDisabledRefresh {
+		t.Fatalf("unexpected bridge state after enable: localIP=%q peers=%+v refresh=%d", localIP, peers, refreshAfterEnable)
+	}
+}
+
+func waitForBridgeRefresh(t *testing.T, refreshC <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-refreshC:
+	case <-time.After(time.Second):
+		t.Fatal("expected localhost bridge refresh")
+	}
+}
+
 func TestReadyUsesTailscaleReport(t *testing.T) {
 	m := New(Config{Tailscale: fakeTailscale{report: tailscale.ReadyReport{
 		Ready:  true,
@@ -437,6 +556,133 @@ func TestPairPeerRefreshesLocalhostBridgePeers(t *testing.T) {
 	localIP, peers, refresh, _ := bridge.Snapshot()
 	if localIP != "100.79.83.104" || len(peers) != 1 || peers[0] != "100.109.251.97" || refresh == 0 {
 		t.Fatalf("unexpected bridge state after pair: localIP=%q peers=%+v refresh=%d", localIP, peers, refresh)
+	}
+}
+
+func TestRemoveTrustedPeerRevokesFirewallAndRefreshesBridge(t *testing.T) {
+	mem := NewMemoryPeerStore()
+	if err := mem.SavePeers([]store.TrustedPeer{
+		{
+			ID:          "device-b",
+			DisplayName: "desktop-b",
+			TailscaleIP: "100.109.251.97",
+		},
+		{
+			ID:          "device-c",
+			DisplayName: "desktop-c",
+			TailscaleIP: "100.109.251.98",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	authorizer := &fakeAccessAuthorizer{}
+	bridge := &fakeLocalhostBridge{}
+	m := New(Config{
+		Tailscale: fakeTailscale{report: tailscale.ReadyReport{
+			Ready:  true,
+			Code:   tailscale.CodeOK,
+			Status: tailscale.Status{LocalIPv4: "100.79.83.104"},
+		}},
+		PeerStore:        mem,
+		AccessAuthorizer: authorizer,
+		LocalhostBridge:  bridge,
+	})
+
+	if err := m.RemoveTrustedPeer(context.Background(), "device-b"); err != nil {
+		t.Fatal(err)
+	}
+
+	revokeCalls := authorizer.RevokeCalls()
+	if len(revokeCalls) != 1 {
+		t.Fatalf("expected one firewall revoke, got %+v", revokeCalls)
+	}
+	if revokeCalls[0].RulePrefix != "portshare" ||
+		revokeCalls[0].LocalTailscaleIP != "100.79.83.104" ||
+		revokeCalls[0].PeerTailscaleIP != "100.109.251.97" ||
+		revokeCalls[0].PeerID != "device-b" ||
+		revokeCalls[0].PeerName != "desktop-b" {
+		t.Fatalf("unexpected revoke access: %+v", revokeCalls[0])
+	}
+
+	peers := mem.Peers()
+	if len(peers) != 1 || peers[0].ID != "device-c" {
+		t.Fatalf("expected remaining peer to be saved, got %+v", peers)
+	}
+	localIP, allowedPeers, refresh, _ := bridge.Snapshot()
+	if localIP != "100.79.83.104" || len(allowedPeers) != 1 || allowedPeers[0] != "100.109.251.98" || refresh == 0 {
+		t.Fatalf("unexpected bridge refresh after removal: localIP=%q peers=%+v refresh=%d", localIP, allowedPeers, refresh)
+	}
+}
+
+func TestRemoveTrustedPeerRevokesFirewallWithoutLocalTailscaleIP(t *testing.T) {
+	mem := NewMemoryPeerStore()
+	if err := mem.SavePeers([]store.TrustedPeer{
+		{
+			ID:          "device-b",
+			DisplayName: "desktop-b",
+			TailscaleIP: "100.109.251.97",
+		},
+		{
+			ID:          "device-c",
+			DisplayName: "desktop-c",
+			TailscaleIP: "100.109.251.98",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &managerRecordingRunner{}
+	bridge := &fakeLocalhostBridge{}
+	m := New(Config{
+		Tailscale: fakeTailscale{report: tailscale.ReadyReport{
+			Ready:  false,
+			Code:   tailscale.CodeTailscaleUnavailable,
+			Status: tailscale.Status{},
+		}},
+		PeerStore:        mem,
+		AccessAuthorizer: firewallBackedRevokeAuthorizer{inner: firewall.NewAuthorizer(runner)},
+		LocalhostBridge:  bridge,
+	})
+
+	if err := m.RemoveTrustedPeer(context.Background(), "device-b"); err != nil {
+		t.Fatal(err)
+	}
+
+	commands := runner.Commands()
+	if len(commands) != 2 {
+		t.Fatalf("expected two firewall delete commands, got %+v", commands)
+	}
+	for _, command := range commands {
+		if command.name != "netsh" || !managerContainsArg(command.args, "delete") {
+			t.Fatalf("expected netsh delete command, got %+v", command)
+		}
+	}
+	peers := mem.Peers()
+	if len(peers) != 1 || peers[0].ID != "device-c" {
+		t.Fatalf("expected peer to be removed after offline revoke, got %+v", peers)
+	}
+	localIP, allowedPeers, refresh, _ := bridge.Snapshot()
+	if localIP != "" || len(allowedPeers) != 1 || allowedPeers[0] != "100.109.251.98" || refresh == 0 {
+		t.Fatalf("expected bridge refresh without local tailscale IP, localIP=%q peers=%+v refresh=%d", localIP, allowedPeers, refresh)
+	}
+}
+
+func TestRemoveTrustedPeerRejectsInvalidRequests(t *testing.T) {
+	if err := New(Config{PeerStore: NewMemoryPeerStore()}).RemoveTrustedPeer(context.Background(), " "); err == nil {
+		t.Fatal("expected empty peer id to fail")
+	}
+	if err := New(Config{}).RemoveTrustedPeer(context.Background(), "device-b"); err == nil {
+		t.Fatal("expected missing peer store to fail")
+	}
+
+	mem := NewMemoryPeerStore()
+	if err := mem.SavePeers([]store.TrustedPeer{{ID: "device-b"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := New(Config{PeerStore: mem}).RemoveTrustedPeer(context.Background(), "missing"); err == nil {
+		t.Fatal("expected missing trusted peer to fail")
+	}
+	if peers := mem.Peers(); len(peers) != 1 || peers[0].ID != "device-b" {
+		t.Fatalf("missing peer removal should not mutate store, got %+v", peers)
 	}
 }
 
@@ -753,3 +999,12 @@ type failingPeerStore struct {
 
 func (s failingPeerStore) LoadPeers() ([]store.TrustedPeer, error) { return nil, s.err }
 func (s failingPeerStore) SavePeers([]store.TrustedPeer) error     { return s.err }
+
+func managerContainsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
