@@ -1,81 +1,68 @@
 # 下一会话交接说明
 
-## 当前状态
+## 当前分支
 
-- 公开仓库已创建：`https://github.com/absuq/portshare-desktop`
-- 默认分支：`main`
-- 当前阶段：需求和 MVP 实现计划已完成，尚未开始写应用代码。
-- 已选择执行方式：Subagent-Driven，也就是按实现计划逐任务派发子代理执行，每个任务完成后由主会话 review。
-- 当前设计规格：`docs/superpowers/specs/2026-04-29-portshare-design.md`
-- 当前实现计划：`docs/superpowers/plans/2026-04-29-portshare-mvp.md`
-- 项目进度清单：`AGENTS.md`
+- 工作分支：`codex/portshare-direct-mode`
+- worktree：`D:\developsoftweare\portshare-desktop\.worktrees\portshare-mvp`
+- 当前规格：`docs/superpowers/specs/2026-05-07-portshare-direct-mode-design.md`
+- 当前全端口访问规格：`docs/superpowers/specs/2026-05-08-portshare-trusted-full-access-design.md`
+- 当前移除计划：`docs/superpowers/plans/2026-05-08-portshare-remove-forwarding.md`
+- 当前全端口访问计划：`docs/superpowers/plans/2026-05-08-portshare-trusted-full-access.md`
 
-## 新会话开始前
+## 当前 MVP 方向
 
-在你新建的 Codex 项目文件夹里执行：
+`portshare` 当前阶段只做双机 Tailscale 直连配对：
 
-```powershell
-git clone https://github.com/absuq/portshare-desktop.git
-cd portshare-desktop
-```
+- 两台电脑都运行 `portshare`。
+- 两台电脑输入同一个共享密钥。
+- 两台电脑启用直连密钥，监听各自的 Tailscale IP `:17890`。
+- 任意一方输入对方 Tailscale IP 或 MagicDNS 名称完成配对。
+- 配对结果写入可信设备列表。
 
-如果 `git clone` 或 `git push` 直连 GitHub 失败，使用本机代理端口 `7897`：
+当前 MVP 不做本地业务端口转发，也不代理任意 TCP 业务流量。关闭 `portshare` 只会停止 `17890` 控制监听，不会关闭 Tailscale 自身的 tailnet 连通性。
 
-```powershell
-git config --local http.proxy http://127.0.0.1:7897
-git config --local https.proxy http://127.0.0.1:7897
-```
+配对成功后，`portshare` 会为对方 Tailscale IP 写入 Windows 防火墙入站允许规则，授权 TCP/UDP 全端口访问本机 Tailscale IP。Windows 构建已嵌入 `requireAdministrator` manifest，启动时会触发 UAC 管理员授权。没有服务监听、服务只绑定 `127.0.0.1`、或 Tailscale ACL 阻止互访时，端口仍然不会连通。
 
-如果还没有远端认证，确认 GitHub CLI 登录状态：
+方案 A 已确认并实现：`portshare` 会自动扫描本机 TCP 监听。如果服务只监听 `127.0.0.1:<port>`，会自动创建 `<本机 Tailscale IP>:<port> -> 127.0.0.1:<port>` 的 localhost 桥接，并只允许可信设备 IP 连接。扫描周期为 5 秒。
 
-```powershell
-gh auth status
-gh auth setup-git
-```
+如果同一个端口已经有 `0.0.0.0:<port>` 或 `<本机 Tailscale IP>:<port>` 原生监听，`portshare` 不会桥接同端口的 `127.0.0.1:<port>`，UI 会显示 `localhost 冲突：<port> 原生监听，未桥接`。
 
-## 新会话推荐提示词
+## 已完成
 
-可以直接把下面这段发给 Codex：
+- 可见产品名统一为 `portshare`。
+- 新增 `internal/tailscale` 诊断适配器。
+- 新增 direct protocol、HMAC 共享密钥握手、可信设备存储。
+- 新增 direct server/client 和 direct manager。
+- 主窗口已切换为 direct-mode UI。
+- `cmd/portshare/main.go` 已注入真实 direct manager。
+- 已移除本地业务端口转发 UI、manager 编排、协议消息和 forward 包。
+- 新增 Windows 防火墙可信设备全端口授权。
+- Windows exe 启动时请求管理员权限。
+- 发起方配对成功后授权对方 Tailscale IP 访问本机。
+- 响应方认证成功后保存并授权发起方 Tailscale IP。
+- 新增自动 localhost TCP 桥接：loopback-only 服务可通过 Tailscale IP 同端口访问。
+- 新增 localhost 冲突提示：同端口已有原生监听时提示未桥接。
+- 手动验收文档已切换为双机配对验收步骤。
 
-```text
-请阅读 AGENTS.md、docs/NEXT_SESSION.md、docs/superpowers/specs/2026-04-29-portshare-design.md 和 docs/superpowers/plans/2026-04-29-portshare-mvp.md。
-
-我们已经确认使用 Subagent-Driven 方式实现 MVP。请使用 superpowers:subagent-driven-development，从计划的 Task 1 开始执行。每个任务完成后先 review，再继续下一个任务。不要跳过测试；每个任务按计划里的测试和 commit 步骤推进。
-```
-
-## 下一步执行要求
-
-新会话开始实现时：
-
-1. 先读取 `AGENTS.md` 和本文件。
-2. 再读取设计规格和实现计划。
-3. 使用 `superpowers:subagent-driven-development`。
-4. 从 `docs/superpowers/plans/2026-04-29-portshare-mvp.md` 的 Task 1 开始。
-5. 每个任务完成后运行对应测试。
-6. 每个任务完成后提交 commit。
-7. 推送前如果直连 GitHub 失败，使用本文件中的 `7897` 代理配置。
-
-## 重要设计边界
-
-- 首版是 Go + Fyne 桌面应用。
-- 默认中文界面，可切换英文。
-- 首版只支持 HTTP/HTTPS 网页服务。
-- 默认开放到 Tailscale tailnet。
-- 公网开放必须强确认，并支持倒计时关闭和长期开放。
-- 支持多个端口同时开放。
-- 支持系统托盘常驻。
-- 保存历史日志，默认保留 1 年。
-- Tailscale 是首版 provider，但核心架构必须保留 provider 抽象，方便未来自建中转。
-
-## 当前 Git 说明
-
-本仓库本地曾遇到直连 `github.com:443` 超时/连接重置。根因是直连 GitHub 链路不稳定，而 `127.0.0.1:7897` 代理可用。
-
-已验证通过代理可正常执行：
+## 本地验证命令
 
 ```powershell
-git ls-remote origin refs/heads/main
-git push
+cd D:\developsoftweare\portshare-desktop\.worktrees\portshare-mvp
+$env:PATH = (Join-Path (Get-Location) '.superpowers\tools\w64devkit-1.23.0\w64devkit\bin') + ';' + $env:PATH
+$env:CGO_ENABLED = '1'
+& '.\.superpowers\tools\go1.26.2\go\bin\go.exe' test ./...
+& '.\.superpowers\tools\go1.26.2\go\bin\go.exe' vet ./...
+.\scripts\build-windows.ps1
 ```
 
-如果换到新文件夹后代理配置没有继承，需要重新执行本文件开头的 `git config --local` 命令。
+不要使用 `.superpowers/tools/w64devkit-2.7.0/` 作为当前 CGO 编译器。
+Windows 桌面版必须通过 `scripts\build-windows.ps1` 构建；脚本会加 `-ldflags='-H windowsgui'`，避免双击运行时弹出终端窗口。
+
+## 下一步
+
+1. 按 `docs/manual-verification.md` 做真实双机配对、全端口访问和 localhost 桥接验收。
+2. 在 UI 中展示 `tailscale ping` 的 direct/DERP 路由与延迟。
+3. 增加可信设备删除，并同步删除对应 Windows 防火墙规则。
+4. 增加 localhost bridge 删除/暂停策略。
+5. 增加更清晰的 Tailscale DNS/Shields Up/Windows 防火墙故障提示。
+6. 单独设计下一阶段“公网转发”能力。
