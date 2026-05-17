@@ -65,6 +65,7 @@ type PairClient interface {
 
 type AccessAuthorizer interface {
 	AllowTrustedPeer(context.Context, TrustedPeerAccess) error
+	RevokeTrustedPeer(context.Context, TrustedPeerAccess) error
 }
 
 type LocalhostBridge interface {
@@ -340,6 +341,56 @@ func (m *Manager) TrustedPeers(ctx context.Context) ([]TrustedPeer, error) {
 	m.peerMu.Lock()
 	defer m.peerMu.Unlock()
 	return m.peerStore.LoadPeers()
+}
+
+func (m *Manager) RemoveTrustedPeer(ctx context.Context, peerID string) error {
+	peerID = strings.TrimSpace(peerID)
+	if peerID == "" {
+		return errors.New("peer id is required")
+	}
+	if m.peerStore == nil {
+		return errors.New("peer store is not configured")
+	}
+
+	m.peerMu.Lock()
+	defer m.peerMu.Unlock()
+
+	peers, err := m.peerStore.LoadPeers()
+	if err != nil {
+		return err
+	}
+
+	removeIndex := -1
+	var removed store.TrustedPeer
+	for i, peer := range peers {
+		if peer.ID != peerID {
+			continue
+		}
+		removeIndex = i
+		removed = peer
+		break
+	}
+	if removeIndex < 0 {
+		return errors.New("trusted peer not found")
+	}
+
+	if m.accessAuthorizer != nil && strings.TrimSpace(removed.TailscaleIP) != "" {
+		if err := m.accessAuthorizer.RevokeTrustedPeer(ctx, TrustedPeerAccess{
+			RulePrefix:       "portshare",
+			LocalTailscaleIP: m.localTailscaleIP(ctx),
+			PeerTailscaleIP:  removed.TailscaleIP,
+			PeerID:           removed.ID,
+			PeerName:         removed.DisplayName,
+		}); err != nil {
+			return err
+		}
+	}
+
+	peers = append(peers[:removeIndex], peers[removeIndex+1:]...)
+	if err := m.peerStore.SavePeers(peers); err != nil {
+		return err
+	}
+	return m.refreshLocalhostBridge(ctx)
 }
 
 func (m *Manager) LocalhostBridgePorts() []int {

@@ -29,6 +29,8 @@ type fakeDirectManager struct {
 	pairAddress        string
 	trustedErr         error
 	pairErr            error
+	removePeerID       string
+	removeErr          error
 	networkReport      netdiag.PeerPathReport
 	networkPeer        string
 	applyRequest       netdiag.BypassRequest
@@ -84,6 +86,20 @@ func (f *fakeDirectManager) TrustedPeers(context.Context) ([]directmanager.Trust
 		return nil, f.trustedErr
 	}
 	return append([]directmanager.TrustedPeer(nil), f.peers...), nil
+}
+
+func (f *fakeDirectManager) RemoveTrustedPeer(_ context.Context, peerID string) error {
+	f.removePeerID = peerID
+	if f.removeErr != nil {
+		return f.removeErr
+	}
+	for i := range f.peers {
+		if f.peers[i].ID == peerID {
+			f.peers = append(f.peers[:i], f.peers[i+1:]...)
+			return nil
+		}
+	}
+	return errors.New("peer not found")
 }
 
 func (f *fakeDirectManager) LocalhostBridgePorts() []int {
@@ -460,6 +476,47 @@ func TestDirectControllerPairPeerKeepsAuthorizedSuccessMessageAfterRefresh(t *te
 
 	if !strings.Contains(ctrl.State().Message, "已配对并授权全端口访问：desktop-b") {
 		t.Fatalf("expected authorized pairing success message to remain visible, got %q", ctrl.State().Message)
+	}
+}
+
+func TestDirectControllerRemoveTrustedPeerUpdatesState(t *testing.T) {
+	mgr := &fakeDirectManager{
+		ready: directmanager.ReadyState{Ready: true, LocalTailscaleIP: "100.79.83.104"},
+		peers: []directmanager.TrustedPeer{
+			{ID: "device-b", DisplayName: "desktop-b", TailscaleIP: "100.109.251.97"},
+		},
+	}
+	ctrl := NewDirectController(mgr)
+	if err := ctrl.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ctrl.RemoveTrustedPeer(context.Background(), "device-b"); err != nil {
+		t.Fatal(err)
+	}
+
+	if mgr.removePeerID != "device-b" {
+		t.Fatalf("expected remove to use selected peer id, got %q", mgr.removePeerID)
+	}
+	state := ctrl.State()
+	if len(state.Peers) != 0 {
+		t.Fatalf("expected peer to be removed from state, got %+v", state.Peers)
+	}
+	if state.Message != "已删除可信设备并撤销防火墙授权" {
+		t.Fatalf("unexpected success message: %q", state.Message)
+	}
+}
+
+func TestDirectControllerRemoveTrustedPeerReportsFailure(t *testing.T) {
+	mgr := &fakeDirectManager{removeErr: errors.New("store unavailable")}
+	ctrl := NewDirectController(mgr)
+
+	err := ctrl.RemoveTrustedPeer(context.Background(), "device-b")
+	if err == nil {
+		t.Fatal("expected remove failure")
+	}
+	if !strings.HasPrefix(ctrl.State().Message, "删除可信设备失败：") {
+		t.Fatalf("unexpected failure message: %q", ctrl.State().Message)
 	}
 }
 

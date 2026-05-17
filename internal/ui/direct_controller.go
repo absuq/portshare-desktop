@@ -45,6 +45,7 @@ type DirectManager interface {
 	RestoreClashNode(context.Context) error
 	PairPeer(context.Context, string) (directmanager.PairedPeer, error)
 	TrustedPeers(context.Context) ([]directmanager.TrustedPeer, error)
+	RemoveTrustedPeer(context.Context, string) error
 }
 
 type DirectController struct {
@@ -395,6 +396,24 @@ func (c *DirectController) pairNormalizedPeer(ctx context.Context, address strin
 	c.state.Message = successMessage
 	if err := c.Refresh(ctx); err != nil {
 		c.state.Message = successMessage + "；状态刷新失败：" + err.Error()
+		return nil
+	}
+	c.state.Message = successMessage
+	return nil
+}
+
+func (c *DirectController) RemoveTrustedPeer(ctx context.Context, peerID string) error {
+	if err := c.requireManager(); err != nil {
+		return err
+	}
+	if err := c.manager.RemoveTrustedPeer(ctx, peerID); err != nil {
+		c.state.Message = "删除可信设备失败：" + err.Error()
+		return err
+	}
+	successMessage := "已删除可信设备并撤销防火墙授权"
+	c.state.Message = successMessage
+	if err := c.Refresh(ctx); err != nil {
+		c.state.Message = successMessage + "，但状态刷新失败：" + err.Error()
 		return nil
 	}
 	c.state.Message = successMessage

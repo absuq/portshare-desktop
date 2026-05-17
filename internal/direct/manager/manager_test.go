@@ -48,9 +48,11 @@ func (f *fakePairClient) Pair(ctx context.Context, address string) (direct.Paire
 }
 
 type fakeAccessAuthorizer struct {
-	mu    sync.Mutex
-	calls []TrustedPeerAccess
-	err   error
+	mu          sync.Mutex
+	calls       []TrustedPeerAccess
+	revokeCalls []TrustedPeerAccess
+	err         error
+	revokeErr   error
 }
 
 func (f *fakeAccessAuthorizer) AllowTrustedPeer(_ context.Context, access TrustedPeerAccess) error {
@@ -60,10 +62,23 @@ func (f *fakeAccessAuthorizer) AllowTrustedPeer(_ context.Context, access Truste
 	return f.err
 }
 
+func (f *fakeAccessAuthorizer) RevokeTrustedPeer(_ context.Context, access TrustedPeerAccess) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.revokeCalls = append(f.revokeCalls, access)
+	return f.revokeErr
+}
+
 func (f *fakeAccessAuthorizer) Calls() []TrustedPeerAccess {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]TrustedPeerAccess(nil), f.calls...)
+}
+
+func (f *fakeAccessAuthorizer) RevokeCalls() []TrustedPeerAccess {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]TrustedPeerAccess(nil), f.revokeCalls...)
 }
 
 type fakeLocalhostBridge struct {
@@ -437,6 +452,81 @@ func TestPairPeerRefreshesLocalhostBridgePeers(t *testing.T) {
 	localIP, peers, refresh, _ := bridge.Snapshot()
 	if localIP != "100.79.83.104" || len(peers) != 1 || peers[0] != "100.109.251.97" || refresh == 0 {
 		t.Fatalf("unexpected bridge state after pair: localIP=%q peers=%+v refresh=%d", localIP, peers, refresh)
+	}
+}
+
+func TestRemoveTrustedPeerRevokesFirewallAndRefreshesBridge(t *testing.T) {
+	mem := NewMemoryPeerStore()
+	if err := mem.SavePeers([]store.TrustedPeer{
+		{
+			ID:          "device-b",
+			DisplayName: "desktop-b",
+			TailscaleIP: "100.109.251.97",
+		},
+		{
+			ID:          "device-c",
+			DisplayName: "desktop-c",
+			TailscaleIP: "100.109.251.98",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	authorizer := &fakeAccessAuthorizer{}
+	bridge := &fakeLocalhostBridge{}
+	m := New(Config{
+		Tailscale: fakeTailscale{report: tailscale.ReadyReport{
+			Ready:  true,
+			Code:   tailscale.CodeOK,
+			Status: tailscale.Status{LocalIPv4: "100.79.83.104"},
+		}},
+		PeerStore:        mem,
+		AccessAuthorizer: authorizer,
+		LocalhostBridge:  bridge,
+	})
+
+	if err := m.RemoveTrustedPeer(context.Background(), "device-b"); err != nil {
+		t.Fatal(err)
+	}
+
+	revokeCalls := authorizer.RevokeCalls()
+	if len(revokeCalls) != 1 {
+		t.Fatalf("expected one firewall revoke, got %+v", revokeCalls)
+	}
+	if revokeCalls[0].RulePrefix != "portshare" ||
+		revokeCalls[0].LocalTailscaleIP != "100.79.83.104" ||
+		revokeCalls[0].PeerTailscaleIP != "100.109.251.97" ||
+		revokeCalls[0].PeerID != "device-b" ||
+		revokeCalls[0].PeerName != "desktop-b" {
+		t.Fatalf("unexpected revoke access: %+v", revokeCalls[0])
+	}
+
+	peers := mem.Peers()
+	if len(peers) != 1 || peers[0].ID != "device-c" {
+		t.Fatalf("expected remaining peer to be saved, got %+v", peers)
+	}
+	localIP, allowedPeers, refresh, _ := bridge.Snapshot()
+	if localIP != "100.79.83.104" || len(allowedPeers) != 1 || allowedPeers[0] != "100.109.251.98" || refresh == 0 {
+		t.Fatalf("unexpected bridge refresh after removal: localIP=%q peers=%+v refresh=%d", localIP, allowedPeers, refresh)
+	}
+}
+
+func TestRemoveTrustedPeerRejectsInvalidRequests(t *testing.T) {
+	if err := New(Config{PeerStore: NewMemoryPeerStore()}).RemoveTrustedPeer(context.Background(), " "); err == nil {
+		t.Fatal("expected empty peer id to fail")
+	}
+	if err := New(Config{}).RemoveTrustedPeer(context.Background(), "device-b"); err == nil {
+		t.Fatal("expected missing peer store to fail")
+	}
+
+	mem := NewMemoryPeerStore()
+	if err := mem.SavePeers([]store.TrustedPeer{{ID: "device-b"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := New(Config{PeerStore: mem}).RemoveTrustedPeer(context.Background(), "missing"); err == nil {
+		t.Fatal("expected missing trusted peer to fail")
+	}
+	if peers := mem.Peers(); len(peers) != 1 || peers[0].ID != "device-b" {
+		t.Fatalf("missing peer removal should not mutate store, got %+v", peers)
 	}
 }
 

@@ -172,6 +172,22 @@ func (a *App) buildMainWindow() fyne.Window {
 			return nil
 		})
 	})
+	removePeerButton := widget.NewButton("删除可信设备", func() {
+		peerID := selectedPeerID
+		if peerID == "" {
+			dialog.ShowInformation("删除可信设备", "请先选择一个可信设备。", w)
+			return
+		}
+		peerName := peerDisplayNameByID(state.Peers, peerID)
+		dialog.ShowConfirm("删除可信设备", "确定删除 "+peerName+" 并撤销防火墙授权吗？", func(confirm bool) {
+			if !confirm {
+				return
+			}
+			withTimeout(func(ctx context.Context) error {
+				return a.directCtrl.RemoveTrustedPeer(ctx, peerID)
+			})
+		}, w)
+	})
 	detectNetworkButton := widget.NewButton("检测网络路径", func() {
 		withTimeout(func(ctx context.Context) error {
 			peerIP := selectedPeerTailscaleIP(state.Peers, selectedPeerID, peerEntry.Text)
@@ -343,7 +359,7 @@ func (a *App) buildMainWindow() fyne.Window {
 	)
 	setupPanel.SetTabLocation(container.TabLocationTop)
 	peerPanel := container.NewBorder(
-		container.NewVBox(widget.NewLabel("可信设备")),
+		container.NewVBox(widget.NewLabel("可信设备"), removePeerButton),
 		nil,
 		nil,
 		nil,
@@ -480,6 +496,15 @@ func peerDisplayName(peer directmanager.TrustedPeer) string {
 		return peer.DisplayName
 	}
 	return peer.ID
+}
+
+func peerDisplayNameByID(peers []directmanager.TrustedPeer, id string) string {
+	for _, peer := range peers {
+		if peer.ID == id {
+			return peerDisplayName(peer)
+		}
+	}
+	return id
 }
 
 func peerDisplayMeta(peer directmanager.TrustedPeer, latency PeerLatency) string {
