@@ -51,6 +51,7 @@ type Manager struct {
 	controlServer   *direct.Server
 	controlListener net.Listener
 	bridgeCancel    context.CancelFunc
+	bridgeEnabled   bool
 	peerMu          sync.Mutex
 	networkMu       sync.Mutex
 	activeBypass    netdiag.ActiveBypass
@@ -125,6 +126,7 @@ func New(config Config) *Manager {
 		secretLabel:        config.SecretLabel,
 		deviceID:           config.DeviceID,
 		deviceName:         config.DeviceName,
+		bridgeEnabled:      true,
 	}
 }
 
@@ -218,7 +220,9 @@ func (m *Manager) StartControlServer(ctx context.Context, listenAddress string, 
 	m.secretLabel = store.DeriveSecretLabel(secret)
 	m.authMu.Unlock()
 
-	m.startLocalhostBridgePolling(ctx, hostFromAddress(listener.Addr().String()))
+	if m.LocalhostBridgeEnabled() {
+		m.startLocalhostBridgePolling(ctx, hostFromAddress(listener.Addr().String()))
+	}
 	go func() { _ = server.Serve(listener) }()
 	return nil
 }
@@ -264,6 +268,51 @@ func (m *Manager) ControlAddress() string {
 		return ""
 	}
 	return m.controlListener.Addr().String()
+}
+
+func (m *Manager) LocalhostBridgeEnabled() bool {
+	m.controlMu.Lock()
+	defer m.controlMu.Unlock()
+	return m.bridgeEnabled
+}
+
+func (m *Manager) SetLocalhostBridgeEnabled(ctx context.Context, enabled bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	m.controlMu.Lock()
+	if m.bridgeEnabled == enabled {
+		m.controlMu.Unlock()
+		if enabled {
+			return m.refreshLocalhostBridge(ctx)
+		}
+		return nil
+	}
+	m.bridgeEnabled = enabled
+	cancel := m.bridgeCancel
+	m.bridgeCancel = nil
+	listening := m.controlListener != nil
+	address := ""
+	if listening {
+		address = m.controlListener.Addr().String()
+	}
+	m.controlMu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if !enabled {
+		if m.localhostBridge != nil {
+			return m.localhostBridge.Close()
+		}
+		return nil
+	}
+	if listening {
+		m.startLocalhostBridgePolling(ctx, hostFromAddress(address))
+		return nil
+	}
+	return m.refreshLocalhostBridge(ctx)
 }
 
 func (m *Manager) PairPeer(ctx context.Context, address string) (PairedPeer, error) {
@@ -626,6 +675,11 @@ func (m *Manager) startLocalhostBridgePolling(ctx context.Context, localIP strin
 	}
 	bridgeCtx, cancel := context.WithCancel(context.Background())
 	m.controlMu.Lock()
+	if !m.bridgeEnabled {
+		m.controlMu.Unlock()
+		cancel()
+		return
+	}
 	m.bridgeCancel = cancel
 	m.controlMu.Unlock()
 
@@ -648,6 +702,9 @@ func (m *Manager) startLocalhostBridgePolling(ctx context.Context, localIP strin
 
 func (m *Manager) refreshLocalhostBridge(ctx context.Context) error {
 	if m.localhostBridge == nil {
+		return nil
+	}
+	if !m.LocalhostBridgeEnabled() {
 		return nil
 	}
 	m.localhostBridge.SetLocalTailscaleIP(m.localTailscaleIP(ctx))

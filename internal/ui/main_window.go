@@ -39,6 +39,7 @@ func (a *App) buildMainWindow() fyne.Window {
 	var selectedClashNodeIndex = -1
 	var clashOptions []string
 	var render func()
+	var renderingBridgeCheck bool
 
 	summaryLabel := widget.NewLabel("Tailscale：未检测 · IP - · 未监听")
 	summaryLabel.TextStyle = fyne.TextStyle{Bold: true}
@@ -120,6 +121,14 @@ func (a *App) buildMainWindow() fyne.Window {
 		}
 		render()
 	}
+	bridgeEnabledCheck := widget.NewCheck("自动 localhost 桥接", func(enabled bool) {
+		if renderingBridgeCheck {
+			return
+		}
+		withTimeout(func(ctx context.Context) error {
+			return a.directCtrl.SetLocalhostBridgeEnabled(ctx, enabled)
+		})
+	})
 
 	refreshButton := widget.NewButton("检测 Tailscale", func() {
 		withTimeout(func(ctx context.Context) error {
@@ -266,6 +275,14 @@ func (a *App) buildMainWindow() fyne.Window {
 		clashControlLabel.SetText(clashControlText(state))
 		clashResultLabel.SetText(clashApplyResultText(state))
 		summaryLabel.SetText(compactStatusSummaryText(state))
+		renderingBridgeCheck = true
+		bridgeEnabledCheck.SetChecked(state.LocalhostBridgeEnabled)
+		renderingBridgeCheck = false
+		if state.ControlListening {
+			bridgeEnabledCheck.Enable()
+		} else {
+			bridgeEnabledCheck.Disable()
+		}
 
 		options := egressCandidateOptions(state.NetworkPath.Candidates)
 		candidateOptions = options
@@ -351,6 +368,7 @@ func (a *App) buildMainWindow() fyne.Window {
 		statusLabel,
 		ipLabel,
 		controlLabel,
+		bridgeEnabledCheck,
 		bridgeLabel,
 		bridgeConflictLabel,
 	))

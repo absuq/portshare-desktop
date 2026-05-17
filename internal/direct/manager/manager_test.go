@@ -356,6 +356,68 @@ func TestStopControlServerClosesLocalhostBridge(t *testing.T) {
 	}
 }
 
+func TestSetLocalhostBridgeEnabledClosesAndRestartsBridge(t *testing.T) {
+	mem := NewMemoryPeerStore()
+	if err := mem.SavePeers([]store.TrustedPeer{{ID: "device-b", TailscaleIP: "100.109.251.97"}}); err != nil {
+		t.Fatal(err)
+	}
+	bridge := &fakeLocalhostBridge{refreshC: make(chan struct{}, 4)}
+	m := New(Config{
+		PeerStore:       mem,
+		LocalhostBridge: bridge,
+		DeviceID:        "device-a",
+		DeviceName:      "desktop-a",
+	})
+
+	if !m.LocalhostBridgeEnabled() {
+		t.Fatal("expected localhost bridge to be enabled by default")
+	}
+	if err := m.StartControlServer(context.Background(), "127.0.0.1:0", "shared"); err != nil {
+		t.Fatal(err)
+	}
+	defer m.StopControlServer(context.Background())
+	waitForBridgeRefresh(t, bridge.refreshC)
+
+	if err := m.SetLocalhostBridgeEnabled(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	if m.LocalhostBridgeEnabled() {
+		t.Fatal("expected localhost bridge to be disabled")
+	}
+	_, _, refreshAfterDisable, closed := bridge.Snapshot()
+	if !closed {
+		t.Fatal("expected bridge to be closed when disabled")
+	}
+	if err := m.refreshLocalhostBridge(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, _, refreshAfterDisabledRefresh, _ := bridge.Snapshot()
+	if refreshAfterDisabledRefresh != refreshAfterDisable {
+		t.Fatalf("disabled bridge should not refresh, before=%d after=%d", refreshAfterDisable, refreshAfterDisabledRefresh)
+	}
+
+	if err := m.SetLocalhostBridgeEnabled(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if !m.LocalhostBridgeEnabled() {
+		t.Fatal("expected localhost bridge to be enabled")
+	}
+	waitForBridgeRefresh(t, bridge.refreshC)
+	localIP, peers, refreshAfterEnable, _ := bridge.Snapshot()
+	if localIP != "127.0.0.1" || len(peers) != 1 || peers[0] != "100.109.251.97" || refreshAfterEnable <= refreshAfterDisabledRefresh {
+		t.Fatalf("unexpected bridge state after enable: localIP=%q peers=%+v refresh=%d", localIP, peers, refreshAfterEnable)
+	}
+}
+
+func waitForBridgeRefresh(t *testing.T, refreshC <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-refreshC:
+	case <-time.After(time.Second):
+		t.Fatal("expected localhost bridge refresh")
+	}
+}
+
 func TestReadyUsesTailscaleReport(t *testing.T) {
 	m := New(Config{Tailscale: fakeTailscale{report: tailscale.ReadyReport{
 		Ready:  true,

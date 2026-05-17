@@ -31,6 +31,8 @@ type DirectManager interface {
 	StartControlServer(context.Context, string, string) error
 	StopControlServer(context.Context) error
 	ControlAddress() string
+	LocalhostBridgeEnabled() bool
+	SetLocalhostBridgeEnabled(context.Context, bool) error
 	LocalhostBridgePorts() []int
 	LocalhostBridgeConflictPorts() []int
 	NetworkPath(context.Context, string) (netdiag.PeerPathReport, error)
@@ -58,6 +60,7 @@ type DirectState struct {
 	LocalTailscaleIP             string
 	ControlListening             bool
 	ControlAddress               string
+	LocalhostBridgeEnabled       bool
 	LocalhostBridgePorts         []int
 	LocalhostBridgeConflictPorts []int
 	NetworkPath                  netdiag.PeerPathReport
@@ -137,8 +140,14 @@ func (c *DirectController) Refresh(ctx context.Context) error {
 	c.state.LocalTailscaleIP = ready.LocalTailscaleIP
 	c.state.DiagnosticCode = ready.Code
 	c.updateControlState()
-	c.state.LocalhostBridgePorts = copyInts(c.manager.LocalhostBridgePorts())
-	c.state.LocalhostBridgeConflictPorts = copyInts(c.manager.LocalhostBridgeConflictPorts())
+	c.state.LocalhostBridgeEnabled = c.manager.LocalhostBridgeEnabled()
+	if c.state.LocalhostBridgeEnabled {
+		c.state.LocalhostBridgePorts = copyInts(c.manager.LocalhostBridgePorts())
+		c.state.LocalhostBridgeConflictPorts = copyInts(c.manager.LocalhostBridgeConflictPorts())
+	} else {
+		c.state.LocalhostBridgePorts = nil
+		c.state.LocalhostBridgeConflictPorts = nil
+	}
 	c.state.ActiveBypass, c.state.HasActiveBypass = c.manager.ActiveNetworkBypass()
 	peers, err := c.manager.TrustedPeers(ctx)
 	if err != nil {
@@ -417,6 +426,25 @@ func (c *DirectController) RemoveTrustedPeer(ctx context.Context, peerID string)
 		return nil
 	}
 	c.state.Message = successMessage
+	return nil
+}
+
+func (c *DirectController) SetLocalhostBridgeEnabled(ctx context.Context, enabled bool) error {
+	if err := c.requireManager(); err != nil {
+		return err
+	}
+	if err := c.manager.SetLocalhostBridgeEnabled(ctx, enabled); err != nil {
+		c.state.Message = "切换 localhost 桥接失败：" + err.Error()
+		return err
+	}
+	c.state.LocalhostBridgeEnabled = enabled
+	if enabled {
+		c.state.Message = "已启用 localhost 桥接"
+	} else {
+		c.state.Message = "已暂停 localhost 桥接"
+		c.state.LocalhostBridgePorts = nil
+		c.state.LocalhostBridgeConflictPorts = nil
+	}
 	return nil
 }
 
