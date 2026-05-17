@@ -89,6 +89,36 @@ func TestAuthorizerReplacesTCPAndUDPRules(t *testing.T) {
 	}
 }
 
+func TestAuthorizerRevokesTCPAndUDPRules(t *testing.T) {
+	runner := &recordingRunner{}
+	authorizer := NewAuthorizer(runner)
+
+	err := authorizer.RevokeTrustedPeer(context.Background(), TrustedPeerAccess{
+		RulePrefix:       "portshare",
+		LocalTailscaleIP: "100.79.83.104",
+		PeerTailscaleIP:  "100.109.251.97",
+		PeerID:           "desktop-bgpql0r",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(runner.commands) != 2 {
+		t.Fatalf("expected delete commands for TCP and UDP, got %+v", runner.commands)
+	}
+	for _, command := range runner.commands {
+		if command.name != "netsh" {
+			t.Fatalf("expected netsh command, got %+v", command)
+		}
+		if !containsArg(command.args, "delete") || !containsArgPrefix(command.args, "name=portshare") {
+			t.Fatalf("expected delete rule command, got %+v", command)
+		}
+		if containsArg(command.args, "add") {
+			t.Fatalf("revoke must not add firewall rules, got %+v", command)
+		}
+	}
+}
+
 func TestBuildTrustedPeerRulesRejectsMissingIPs(t *testing.T) {
 	if _, err := BuildTrustedPeerRules(TrustedPeerAccess{LocalTailscaleIP: "", PeerTailscaleIP: "100.109.251.97"}); err == nil {
 		t.Fatal("expected missing local tailscale IP to fail")

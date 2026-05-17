@@ -61,6 +61,23 @@ func (a *Authorizer) AllowTrustedPeer(ctx context.Context, access TrustedPeerAcc
 	return nil
 }
 
+func (a *Authorizer) RevokeTrustedPeer(ctx context.Context, access TrustedPeerAccess) error {
+	if a == nil {
+		return errors.New("firewall authorizer is not configured")
+	}
+	rules, err := BuildTrustedPeerRules(access)
+	if err != nil {
+		return err
+	}
+	for _, rule := range rules {
+		output, err := a.runner.Run(ctx, "netsh", deleteRuleArgs(rule)...)
+		if err != nil {
+			return describeDeleteRuleError(rule, output, err)
+		}
+	}
+	return nil
+}
+
 func BuildTrustedPeerRules(access TrustedPeerAccess) ([]Rule, error) {
 	localIP := strings.TrimSpace(access.LocalTailscaleIP)
 	peerIP := strings.TrimSpace(access.PeerTailscaleIP)
@@ -158,6 +175,18 @@ func addRuleArgs(rule Rule) []string {
 		"profile=any",
 		"enable=yes",
 	}
+}
+
+func describeDeleteRuleError(rule Rule, output []byte, err error) error {
+	details := strings.TrimSpace(string(output))
+	text := strings.ToLower(details + " " + err.Error())
+	if strings.Contains(text, "elevat") || strings.Contains(text, "administrator") || strings.Contains(text, "access is denied") || strings.Contains(text, "拒绝访问") {
+		return fmt.Errorf("删除 Windows 防火墙规则 %q 失败：请以管理员身份运行 portshare 后重试：%w", rule.Name, err)
+	}
+	if details == "" {
+		return fmt.Errorf("删除 Windows 防火墙规则 %q 失败：%w", rule.Name, err)
+	}
+	return fmt.Errorf("删除 Windows 防火墙规则 %q 失败：%s：%w", rule.Name, details, err)
 }
 
 func describeRuleError(rule Rule, output []byte, err error) error {

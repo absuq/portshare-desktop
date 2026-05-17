@@ -9,6 +9,7 @@ import (
 
 type firewallAccessAuthorizer interface {
 	AllowTrustedPeer(context.Context, firewall.TrustedPeerAccess) error
+	RevokeTrustedPeer(context.Context, firewall.TrustedPeerAccess) error
 }
 
 type managerFirewallAuthorizer struct {
@@ -17,6 +18,16 @@ type managerFirewallAuthorizer struct {
 
 func (a managerFirewallAuthorizer) AllowTrustedPeer(ctx context.Context, access directmanager.TrustedPeerAccess) error {
 	return a.inner.AllowTrustedPeer(ctx, firewall.TrustedPeerAccess{
+		RulePrefix:       access.RulePrefix,
+		LocalTailscaleIP: access.LocalTailscaleIP,
+		PeerTailscaleIP:  access.PeerTailscaleIP,
+		PeerID:           access.PeerID,
+		PeerName:         access.PeerName,
+	})
+}
+
+func (a managerFirewallAuthorizer) RevokeTrustedPeer(ctx context.Context, access directmanager.TrustedPeerAccess) error {
+	return a.inner.RevokeTrustedPeer(ctx, firewall.TrustedPeerAccess{
 		RulePrefix:       access.RulePrefix,
 		LocalTailscaleIP: access.LocalTailscaleIP,
 		PeerTailscaleIP:  access.PeerTailscaleIP,
