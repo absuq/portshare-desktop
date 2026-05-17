@@ -2,12 +2,15 @@
 
 ## 当前分支
 
-- 工作分支：`codex/portshare-direct-mode`
+- 工作分支：`codex/portshare-hardening`
 - worktree：`D:\developsoftweare\portshare-desktop\.worktrees\portshare-mvp`
 - 当前规格：`docs/superpowers/specs/2026-05-07-portshare-direct-mode-design.md`
 - 当前全端口访问规格：`docs/superpowers/specs/2026-05-08-portshare-trusted-full-access-design.md`
 - 当前移除计划：`docs/superpowers/plans/2026-05-08-portshare-remove-forwarding.md`
 - 当前全端口访问计划：`docs/superpowers/plans/2026-05-08-portshare-trusted-full-access.md`
+- 已发布版本：`v0.1.0`
+- Release 地址：`https://github.com/absuq/portshare-desktop/releases/tag/v0.1.0`
+- 当前主线已合并 PR：`#2 [codex] add tailscale link guardian`
 
 ## 当前 MVP 方向
 
@@ -60,9 +63,9 @@ Windows 桌面版必须通过 `scripts\build-windows.ps1` 构建；脚本会加 
 
 ## 下一步
 
-1. 按 `docs/manual-verification.md` 做真实双机配对、全端口访问和 localhost 桥接验收。
-2. 在 UI 中展示 `tailscale ping` 的 direct/DERP 路由与延迟。
-3. 增加可信设备删除，并同步删除对应 Windows 防火墙规则。
-4. 增加 localhost bridge 删除/暂停策略。
-5. 增加更清晰的 Tailscale DNS/Shields Up/Windows 防火墙故障提示。
+1. 增加可信设备删除，并同步删除对应 Windows 防火墙规则。
+2. 增加 localhost bridge 暂停/恢复开关。
+3. 增加更清晰的 Tailscale DNS、Shields Up、Windows 防火墙、对端未运行 portshare、密钥不匹配提示。
+4. 增加 GitHub Actions CI：测试、vet、Windows 构建。
+5. 按 `docs/manual-verification.md` 做 release 版真实双机配对、全端口访问、localhost 桥接和链路守护验收。
 6. 单独设计下一阶段“公网转发”能力。
