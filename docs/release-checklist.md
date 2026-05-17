@@ -5,6 +5,7 @@
 Run from the release branch:
 
 ```powershell
+$env:PATH = (Join-Path (Get-Location) '.superpowers\tools\w64devkit-1.23.0\w64devkit\bin') + ';' + (Join-Path (Get-Location) '.superpowers\tools\go1.26.2\go\bin') + ';' + $env:PATH
 $env:CGO_ENABLED = '1'
 go test ./...
 go vet ./...
@@ -12,7 +13,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File '.\scripts\build-windows
 Get-FileHash '.\.superpowers\tmp\portshare-direct.exe' -Algorithm SHA256
 ```
 
-If a local portable toolchain exists under `.superpowers\tools`, the build script uses it first. CI uses the PATH tools installed by `setup-go` and `setup-mingw`.
+If `go` is not on the local PATH, add the portable toolchain first as shown above; the Go binary is under `.superpowers\tools\go1.26.2\go\bin`. If a local portable toolchain exists under `.superpowers\tools`, the build script uses it first. CI uses the PATH tools installed by `setup-go` and `setup-mingw`.
 
 ## GitHub Verification
 

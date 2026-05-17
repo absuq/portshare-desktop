@@ -12,6 +12,7 @@ import (
 	"github.com/absuq/portshare-desktop/internal/clash"
 	direct "github.com/absuq/portshare-desktop/internal/direct"
 	"github.com/absuq/portshare-desktop/internal/direct/store"
+	"github.com/absuq/portshare-desktop/internal/firewall"
 	"github.com/absuq/portshare-desktop/internal/linkguardian"
 	"github.com/absuq/portshare-desktop/internal/netdiag"
 	"github.com/absuq/portshare-desktop/internal/tailscale"
@@ -79,6 +80,47 @@ func (f *fakeAccessAuthorizer) RevokeCalls() []TrustedPeerAccess {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]TrustedPeerAccess(nil), f.revokeCalls...)
+}
+
+type managerRecordedCommand struct {
+	name string
+	args []string
+}
+
+type managerRecordingRunner struct {
+	mu       sync.Mutex
+	commands []managerRecordedCommand
+}
+
+func (r *managerRecordingRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.commands = append(r.commands, managerRecordedCommand{name: name, args: append([]string(nil), args...)})
+	return []byte("ok"), nil
+}
+
+func (r *managerRecordingRunner) Commands() []managerRecordedCommand {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]managerRecordedCommand(nil), r.commands...)
+}
+
+type firewallBackedRevokeAuthorizer struct {
+	inner *firewall.Authorizer
+}
+
+func (a firewallBackedRevokeAuthorizer) AllowTrustedPeer(context.Context, TrustedPeerAccess) error {
+	return nil
+}
+
+func (a firewallBackedRevokeAuthorizer) RevokeTrustedPeer(ctx context.Context, access TrustedPeerAccess) error {
+	return a.inner.RevokeTrustedPeer(ctx, firewall.TrustedPeerAccess{
+		RulePrefix:       access.RulePrefix,
+		LocalTailscaleIP: access.LocalTailscaleIP,
+		PeerTailscaleIP:  access.PeerTailscaleIP,
+		PeerID:           access.PeerID,
+		PeerName:         access.PeerName,
+	})
 }
 
 type fakeLocalhostBridge struct {
@@ -572,6 +614,58 @@ func TestRemoveTrustedPeerRevokesFirewallAndRefreshesBridge(t *testing.T) {
 	}
 }
 
+func TestRemoveTrustedPeerRevokesFirewallWithoutLocalTailscaleIP(t *testing.T) {
+	mem := NewMemoryPeerStore()
+	if err := mem.SavePeers([]store.TrustedPeer{
+		{
+			ID:          "device-b",
+			DisplayName: "desktop-b",
+			TailscaleIP: "100.109.251.97",
+		},
+		{
+			ID:          "device-c",
+			DisplayName: "desktop-c",
+			TailscaleIP: "100.109.251.98",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &managerRecordingRunner{}
+	bridge := &fakeLocalhostBridge{}
+	m := New(Config{
+		Tailscale: fakeTailscale{report: tailscale.ReadyReport{
+			Ready:  false,
+			Code:   tailscale.CodeTailscaleUnavailable,
+			Status: tailscale.Status{},
+		}},
+		PeerStore:        mem,
+		AccessAuthorizer: firewallBackedRevokeAuthorizer{inner: firewall.NewAuthorizer(runner)},
+		LocalhostBridge:  bridge,
+	})
+
+	if err := m.RemoveTrustedPeer(context.Background(), "device-b"); err != nil {
+		t.Fatal(err)
+	}
+
+	commands := runner.Commands()
+	if len(commands) != 2 {
+		t.Fatalf("expected two firewall delete commands, got %+v", commands)
+	}
+	for _, command := range commands {
+		if command.name != "netsh" || !managerContainsArg(command.args, "delete") {
+			t.Fatalf("expected netsh delete command, got %+v", command)
+		}
+	}
+	peers := mem.Peers()
+	if len(peers) != 1 || peers[0].ID != "device-c" {
+		t.Fatalf("expected peer to be removed after offline revoke, got %+v", peers)
+	}
+	localIP, allowedPeers, refresh, _ := bridge.Snapshot()
+	if localIP != "" || len(allowedPeers) != 1 || allowedPeers[0] != "100.109.251.98" || refresh == 0 {
+		t.Fatalf("expected bridge refresh without local tailscale IP, localIP=%q peers=%+v refresh=%d", localIP, allowedPeers, refresh)
+	}
+}
+
 func TestRemoveTrustedPeerRejectsInvalidRequests(t *testing.T) {
 	if err := New(Config{PeerStore: NewMemoryPeerStore()}).RemoveTrustedPeer(context.Background(), " "); err == nil {
 		t.Fatal("expected empty peer id to fail")
@@ -905,3 +999,12 @@ type failingPeerStore struct {
 
 func (s failingPeerStore) LoadPeers() ([]store.TrustedPeer, error) { return nil, s.err }
 func (s failingPeerStore) SavePeers([]store.TrustedPeer) error     { return s.err }
+
+func managerContainsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}

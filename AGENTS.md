@@ -22,7 +22,7 @@
 
 ## 已完成
 
-- 产品可见名统一为 `portshare`。
+- 可见产品名统一为 `portshare`。
 - 新增 `internal/tailscale`：Tailscale CLI runner、status 解析、ready 诊断、peer ping 解析。
 - 新增 `internal/direct/protocol`：length-prefixed JSON frame 和 HMAC 共享密钥认证。
 - 新增 `internal/direct/store`：可信设备 JSON 存储，不保存明文共享密钥。
@@ -33,6 +33,11 @@
 - 主窗口已切换为 direct-mode UI。
 - `cmd/portshare/main.go` 已注入真实 direct manager。
 - 文档已更新为 direct-mode 规格、计划和手动验收。
+- 已实现可信设备删除，并同步撤销对应 Windows 防火墙 TCP/UDP 规则。
+- 已实现撤权离线容错：删除防火墙规则不再依赖当前本机 Tailscale IP。
+- 已实现 localhost bridge 暂停和恢复开关。
+- 已补充配对失败提示：MagicDNS、Shields Up、Windows 防火墙、对端未运行、共享密钥不匹配等场景。
+- 已补充 GitHub CI 和 release checklist。
 
 ## 当前验证
 
@@ -40,20 +45,17 @@
 
 ```powershell
 cd D:\developsoftweare\portshare-desktop\.worktrees\portshare-mvp
-$env:PATH = (Join-Path (Get-Location) '.superpowers\tools\w64devkit-1.23.0\w64devkit\bin') + ';' + $env:PATH
+$env:PATH = (Join-Path (Get-Location) '.superpowers\tools\w64devkit-1.23.0\w64devkit\bin') + ';' + (Join-Path (Get-Location) '.superpowers\tools\go1.26.2\go\bin') + ';' + $env:PATH
 $env:CGO_ENABLED = '1'
-& '.\.superpowers\tools\go1.26.2\go\bin\go.exe' test ./...
-& '.\.superpowers\tools\go1.26.2\go\bin\go.exe' vet ./...
-& '.\.superpowers\tools\go1.26.2\go\bin\go.exe' build -o .superpowers\tmp\portshare-direct.exe ./cmd/portshare
+go test ./...
+go vet ./...
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '.\scripts\build-windows.ps1'
 ```
 
-不要使用 `.superpowers/tools/w64devkit-2.7.0/` 作为当前 Go 1.26.2 的 CGO 编译器。
+不要使用 `.superpowers/tools/w64devkit-2.7.0/` 作为当前 Go 1.26.2 的 CGO 编译器。Windows 桌面版必须通过 `scripts\build-windows.ps1` 构建；脚本会自动优先使用便携 Go 和 w64devkit 工具链。
 
 ## 下一步
 
-1. 增加可信设备删除，并同步删除对应 Windows 防火墙规则。
-2. 增加 localhost bridge 暂停/恢复开关。
-3. 增加更清晰的 Tailscale DNS、Shields Up、Windows 防火墙、对端未运行 portshare、密钥不匹配提示。
-4. 增加 GitHub Actions CI：测试、vet、Windows 构建。
-5. 按 `docs/manual-verification.md` 做 release 版真实双机配对、全端口访问、localhost 桥接和链路守护验收。
-6. 单独设计下一阶段“公网转发”能力。
+1. 按 `docs/manual-verification.md` 做 release 版真实双机配对、全端口访问、localhost 桥接、可信设备删除撤权和链路守护验收。
+2. 在 GitHub 上确认 CI 运行结果，并把验证命令和构建产物 SHA256 写入 PR/release 记录。
+3. 单独设计下一阶段“公网转发”能力，明确 provider 抽象、安全确认、访问控制和退出策略。

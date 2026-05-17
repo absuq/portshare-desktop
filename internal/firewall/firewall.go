@@ -65,7 +65,7 @@ func (a *Authorizer) RevokeTrustedPeer(ctx context.Context, access TrustedPeerAc
 	if a == nil {
 		return errors.New("firewall authorizer is not configured")
 	}
-	rules, err := BuildTrustedPeerRules(access)
+	rules, err := BuildTrustedPeerRevokeRules(access)
 	if err != nil {
 		return err
 	}
@@ -85,9 +85,17 @@ func (a *Authorizer) RevokeTrustedPeer(ctx context.Context, access TrustedPeerAc
 }
 
 func BuildTrustedPeerRules(access TrustedPeerAccess) ([]Rule, error) {
+	return buildTrustedPeerRules(access, true)
+}
+
+func BuildTrustedPeerRevokeRules(access TrustedPeerAccess) ([]Rule, error) {
+	return buildTrustedPeerRules(access, false)
+}
+
+func buildTrustedPeerRules(access TrustedPeerAccess, requireLocalIP bool) ([]Rule, error) {
 	localIP := strings.TrimSpace(access.LocalTailscaleIP)
 	peerIP := strings.TrimSpace(access.PeerTailscaleIP)
-	if net.ParseIP(localIP) == nil {
+	if requireLocalIP && net.ParseIP(localIP) == nil {
 		return nil, fmt.Errorf("本机 Tailscale IP 无效或缺失：%q", access.LocalTailscaleIP)
 	}
 	if net.ParseIP(peerIP) == nil {

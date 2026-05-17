@@ -140,6 +140,32 @@ func TestAuthorizerRevokesTCPAndUDPRules(t *testing.T) {
 	}
 }
 
+func TestAuthorizerRevokeDoesNotRequireLocalTailscaleIP(t *testing.T) {
+	runner := &recordingRunner{}
+	authorizer := NewAuthorizer(runner)
+
+	err := authorizer.RevokeTrustedPeer(context.Background(), TrustedPeerAccess{
+		RulePrefix:      "portshare",
+		PeerTailscaleIP: "100.109.251.97",
+		PeerID:          "desktop-bgpql0r",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(runner.commands) != 2 {
+		t.Fatalf("expected delete commands for TCP and UDP, got %+v", runner.commands)
+	}
+	for _, command := range runner.commands {
+		if !containsArg(command.args, "delete") || !containsArgPrefix(command.args, "name=portshare-trusted-desktop-bgpql0r-100.109.251.97-") {
+			t.Fatalf("expected delete rule command with stable trusted peer rule name, got %+v", command)
+		}
+		if containsArg(command.args, "localip=") {
+			t.Fatalf("delete rule command should not require localip, got %+v", command)
+		}
+	}
+}
+
 func TestAuthorizerRevokeContinuesWhenRuleDoesNotExist(t *testing.T) {
 	runner := &scriptedRunner{
 		results: []scriptedResult{
