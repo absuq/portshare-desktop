@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -22,7 +23,7 @@ import (
 )
 
 const (
-	peerLatencyRefreshInterval = 200 * time.Millisecond
+	peerLatencyRefreshInterval = 500 * time.Millisecond
 	peerLatencyProbeTimeout    = 150 * time.Millisecond
 )
 
@@ -353,25 +354,69 @@ func (a *App) buildMainWindow() fyne.Window {
 	main.Offset = 0.32
 	w.SetContent(container.NewBorder(statusBand, nil, nil, nil, main))
 	render()
-	latencyCtx, stopLatencyRefresh := context.WithCancel(context.Background())
-	w.SetOnClosed(stopLatencyRefresh)
-	startPeerLatencyRefresh(latencyCtx, func(ctx context.Context) {
+	refreshLatencies := func(ctx context.Context) {
 		_ = a.directCtrl.RefreshPeerLatencies(ctx)
 		render()
-	})
+	}
+	a.startWindowRefresh = func() {
+		a.latencyRefresh.Start(peerLatencyRefreshInterval, peerLatencyProbeTimeout, refreshLatencies)
+	}
+	a.stopWindowRefresh = a.latencyRefresh.Stop
+	w.SetOnClosed(a.stopDirectLatencyRefresh)
+	a.startDirectLatencyRefresh()
 	return w
 }
 
-func startPeerLatencyRefresh(ctx context.Context, refresh func(context.Context)) {
+type peerLatencyRefreshControl struct {
+	mu     sync.Mutex
+	cancel context.CancelFunc
+}
+
+func (c *peerLatencyRefreshControl) Start(interval time.Duration, timeout time.Duration, refresh func(context.Context)) {
+	if c == nil || refresh == nil {
+		return
+	}
+	c.mu.Lock()
+	if c.cancel != nil {
+		c.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	c.cancel = cancel
+	c.mu.Unlock()
+
+	startPeerLatencyRefresh(ctx, interval, timeout, refresh)
+}
+
+func (c *peerLatencyRefreshControl) Stop() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	cancel := c.cancel
+	c.cancel = nil
+	c.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func startPeerLatencyRefresh(ctx context.Context, interval time.Duration, timeout time.Duration, refresh func(context.Context)) {
+	if interval <= 0 || refresh == nil {
+		return
+	}
+	if timeout <= 0 || timeout > interval {
+		timeout = interval
+	}
 	go func() {
-		ticker := time.NewTicker(peerLatencyRefreshInterval)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				tickCtx, cancel := context.WithTimeout(ctx, peerLatencyProbeTimeout)
+				tickCtx, cancel := context.WithTimeout(ctx, timeout)
 				refresh(tickCtx)
 				cancel()
 			}

@@ -21,6 +21,10 @@ type App struct {
 	ctrl       *Controller
 	directCtrl *DirectController
 	refreshUI  func()
+
+	latencyRefresh     peerLatencyRefreshControl
+	startWindowRefresh func()
+	stopWindowRefresh  func()
 }
 
 func New(deps Dependencies) *App {
@@ -38,7 +42,20 @@ func (a *App) Run() {
 	a.configureTray()
 	a.window = a.buildMainWindow()
 	a.window.SetCloseIntercept(func() {
+		a.stopDirectLatencyRefresh()
 		a.window.Hide()
 	})
 	a.window.ShowAndRun()
+}
+
+func (a *App) startDirectLatencyRefresh() {
+	if a.startWindowRefresh != nil {
+		a.startWindowRefresh()
+	}
+}
+
+func (a *App) stopDirectLatencyRefresh() {
+	if a.stopWindowRefresh != nil {
+		a.stopWindowRefresh()
+	}
 }

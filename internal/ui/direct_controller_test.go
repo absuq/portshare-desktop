@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -649,13 +650,59 @@ func TestScrollPageAllowsBothAxisOverflowInsideTabs(t *testing.T) {
 	}
 }
 
-func TestPeerLatencyRefreshIntervalIsTwoHundredMilliseconds(t *testing.T) {
-	if peerLatencyRefreshInterval != 200*time.Millisecond {
-		t.Fatalf("expected peer latency refresh interval to be 200ms, got %s", peerLatencyRefreshInterval)
+func TestPeerLatencyRefreshIntervalIsFiveHundredMilliseconds(t *testing.T) {
+	if peerLatencyRefreshInterval != 500*time.Millisecond {
+		t.Fatalf("expected peer latency refresh interval to be 500ms, got %s", peerLatencyRefreshInterval)
+	}
+	if peerLatencyRefreshInterval > time.Second {
+		t.Fatalf("peer latency refresh interval should stay within 1s, got %s", peerLatencyRefreshInterval)
 	}
 	if peerLatencyProbeTimeout >= peerLatencyRefreshInterval {
 		t.Fatalf("probe timeout should stay below refresh interval, timeout=%s interval=%s", peerLatencyProbeTimeout, peerLatencyRefreshInterval)
 	}
+}
+
+func TestPeerLatencyRefreshControlStopsAndRestarts(t *testing.T) {
+	var calls int
+	var mu sync.Mutex
+	refresh := func(context.Context) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+	}
+
+	control := &peerLatencyRefreshControl{}
+	control.Start(5*time.Millisecond, 2*time.Millisecond, refresh)
+	waitForCallCount(t, &mu, &calls, 1)
+
+	control.Stop()
+	stoppedAt := callCount(&mu, &calls)
+	time.Sleep(20 * time.Millisecond)
+	if got := callCount(&mu, &calls); got != stoppedAt {
+		t.Fatalf("expected refresh to stop at %d calls, got %d", stoppedAt, got)
+	}
+
+	control.Start(5*time.Millisecond, 2*time.Millisecond, refresh)
+	waitForCallCount(t, &mu, &calls, stoppedAt+1)
+	control.Stop()
+}
+
+func waitForCallCount(t *testing.T, mu *sync.Mutex, calls *int, want int) {
+	t.Helper()
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if got := callCount(mu, calls); got >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for at least %d refresh calls, got %d", want, callCount(mu, calls))
+}
+
+func callCount(mu *sync.Mutex, calls *int) int {
+	mu.Lock()
+	defer mu.Unlock()
+	return *calls
 }
 
 func TestPeerDisplayMetaShowsFullAccessAuthorization(t *testing.T) {

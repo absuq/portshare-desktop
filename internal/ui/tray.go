@@ -18,6 +18,10 @@ func (a *App) configureTray() {
 		fyne.NewMenuItem("打开主界面", func() {
 			if a.window != nil {
 				a.window.Show()
+				a.startDirectLatencyRefresh()
+				if a.refreshUI != nil {
+					a.refreshUI()
+				}
 			}
 		}),
 		fyne.NewMenuItem("检测 Tailscale", func() {
@@ -31,6 +35,7 @@ func (a *App) configureTray() {
 			})
 		}),
 		fyne.NewMenuItem("退出", func() {
+			a.stopDirectLatencyRefresh()
 			a.fyneApp.Quit()
 		}),
 	)
