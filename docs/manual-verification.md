@@ -25,6 +25,24 @@
    tailscale status
    ```
 
+## 配对失败排查
+
+- 如果提示 MagicDNS 解析失败，优先直接输入对方 Tailscale IP。需要排查 DNS 时执行：
+
+  ```powershell
+  Resolve-DnsName <peer>.ts.net -Server 100.100.100.100
+  tailscale set --accept-dns=true
+  ```
+
+- 如果提示连接被拒绝，检查对方是否已经启动新版 `portshare`，输入同一个共享密钥，并点击“启用直连密钥”。如果对方已经启用直连密钥，继续检查 Tailscale Shields Up 或 Windows 防火墙是否拦截 17890。
+- 如果提示连接超时，检查两端 Tailscale 是否可互通、Tailscale Shields Up、Windows 防火墙和 Tailscale ACL，并执行：
+
+  ```powershell
+  Test-NetConnection <peer-tailscale-ip> -Port 17890
+  ```
+
+- 如果提示共享密钥不一致，两端重新输入同一个密钥，并都重新点击“启用直连密钥”后再配对。
+
 ## 直连配对
 
 1. 两台电脑都输入同一个共享密钥。

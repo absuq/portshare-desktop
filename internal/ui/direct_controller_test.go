@@ -647,6 +647,60 @@ func TestDirectControllerPairPeerExplainsConnectionRefused(t *testing.T) {
 	}
 }
 
+func TestDescribePairErrorExplainsDNSFailure(t *testing.T) {
+	err := describePairError("abs-u-q.tail51fe78.ts.net:17890", errors.New("lookup abs-u-q.tail51fe78.ts.net: no such host"))
+	if err == nil {
+		t.Fatal("expected DNS pairing error")
+	}
+	if !strings.Contains(err.Error(), "MagicDNS") {
+		t.Fatalf("expected MagicDNS hint, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "直接输入对方 Tailscale IP") {
+		t.Fatalf("expected direct Tailscale IP hint, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "Resolve-DnsName <peer>.ts.net -Server 100.100.100.100") {
+		t.Fatalf("expected Resolve-DnsName command, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "tailscale set --accept-dns=true") {
+		t.Fatalf("expected accept-dns command, got %v", err)
+	}
+}
+
+func TestDescribePairErrorExplainsTimeout(t *testing.T) {
+	err := describePairError("100.109.251.97:17890", errors.New("dial tcp 100.109.251.97:17890: i/o timeout"))
+	if err == nil {
+		t.Fatal("expected timeout pairing error")
+	}
+	if !strings.Contains(err.Error(), "Tailscale 可互通") {
+		t.Fatalf("expected Tailscale connectivity hint, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "Shields Up") {
+		t.Fatalf("expected Shields Up hint, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "Windows 防火墙") {
+		t.Fatalf("expected Windows firewall hint, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "Test-NetConnection <peer-ip> -Port 17890") {
+		t.Fatalf("expected Test-NetConnection command, got %v", err)
+	}
+}
+
+func TestDescribePairErrorExplainsSharedSecretMismatch(t *testing.T) {
+	err := describePairError("100.109.251.97:17890", errors.New("authentication failed"))
+	if err == nil {
+		t.Fatal("expected authentication pairing error")
+	}
+	if !strings.Contains(err.Error(), "共享密钥不一致") {
+		t.Fatalf("expected shared secret mismatch hint, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "重新输入") {
+		t.Fatalf("expected re-enter secret hint, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "重新启用直连密钥") {
+		t.Fatalf("expected re-enable direct key hint, got %v", err)
+	}
+}
+
 func TestDirectControllerPairPeerWithSecretStartsControlServerBeforePairing(t *testing.T) {
 	mgr := &fakeDirectManager{}
 	ctrl := NewDirectController(mgr)
